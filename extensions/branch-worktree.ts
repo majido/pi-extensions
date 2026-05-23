@@ -1,3 +1,13 @@
+/**
+ * Branch Worktree Extension
+ *
+ * Creates a git worktree from a base branch and opens it in a sibling cmux workspace.
+ * Auto-detects origin/main or origin/master as the base branch.
+ *
+ * Commands: /branch <name> [--base ref] [--worktree-dir dir] [--command cmd]
+ * Env: PI_BRANCH_BASE, PI_BRANCH_WORKTREE_DIR, PI_BRANCH_AGENT_COMMAND
+ */
+
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
