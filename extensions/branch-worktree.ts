@@ -9,7 +9,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const DEFAULT_WORKTREE_DIR = process.env.PI_BRANCH_WORKTREE_DIR ?? ".worktree";
@@ -50,9 +50,11 @@ function parseArgs(raw: string): ParsedArgs | null {
 		} else if (token.startsWith("--worktree-dir=")) {
 			worktreeRoot = token.slice("--worktree-dir=".length);
 		} else if (token === "--command" && tokens[i + 1]) {
-			command = tokens[++i];
+			command = tokens.slice(++i).join(" ");
+			break;
 		} else if (token.startsWith("--command=")) {
-			command = token.slice("--command=".length);
+			command = [token.slice("--command=".length), ...tokens.slice(i + 1)].join(" ");
+			break;
 		} else {
 			branchParts.push(token);
 		}
@@ -132,6 +134,10 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 				ctx.ui.notify(`Creating ${branch} from ${base}...`, "info");
 				mkdirSync(worktreeRoot, { recursive: true });
 
+				if (existsSync(worktreePath)) {
+					throw new Error(`Worktree directory already exists: ${worktreePath}`);
+				}
+
 				const existingBranch = await pi.exec("git", ["show-ref", "--verify", `refs/heads/${branch}`], {
 					cwd: repoRoot,
 					timeout: 10_000,
@@ -143,34 +149,44 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 				await run("git", ["rev-parse", "--verify", base], repoRoot);
 				await run("git", ["worktree", "add", "-b", branch, worktreePath, base], repoRoot, 180_000);
 
-				const identifyRaw = await run("cmux", ["identify", "--no-caller"], repoRoot);
-				const identify = JSON.parse(identifyRaw) as { focused?: { window_ref?: string } };
-				const windowRef = identify.focused?.window_ref;
-				if (!windowRef) throw new Error("Could not determine current cmux window");
+				let workspaceCreated = false;
+				try {
+					const identifyRaw = await run("cmux", ["identify", "--no-caller"], repoRoot);
+					const identify = JSON.parse(identifyRaw) as { focused?: { window_ref?: string } };
+					const windowRef = identify.focused?.window_ref;
+					if (!windowRef) throw new Error("Could not determine current cmux window");
 
-				const workspaceList = await run("cmux", ["list-workspaces"], repoRoot);
-				const workspaceName = parseSelectedWorkspaceName(workspaceList, branch);
+					const workspaceList = await run("cmux", ["list-workspaces"], repoRoot);
+					const workspaceName = parseSelectedWorkspaceName(workspaceList, branch);
 
-				await run(
-					"cmux",
-					[
-						"new-workspace",
-						"--window",
-						windowRef,
-						"--name",
-						workspaceName,
-						"--cwd",
-						worktreePath,
-						"--command",
-						command,
-						"--focus",
-						"true",
-					],
-					repoRoot,
-					60_000,
-				);
+					await run(
+						"cmux",
+						[
+							"new-workspace",
+							"--window",
+							windowRef,
+							"--name",
+							workspaceName,
+							"--cwd",
+							worktreePath,
+							"--command",
+							command,
+							"--focus",
+							"true",
+						],
+						repoRoot,
+						60_000,
+					);
+					workspaceCreated = true;
+				} catch (cmuxError) {
+					await run("git", ["worktree", "remove", "--force", worktreePath], repoRoot).catch(() => {});
+					await pi.exec("git", ["branch", "-D", branch], { cwd: repoRoot, timeout: 10_000 }).catch(() => {});
+					throw cmuxError;
+				}
 
-				ctx.ui.notify(`Opened ${branch} in ${worktreePath} as cmux workspace "${workspaceName}"`, "info");
+				if (workspaceCreated) {
+					ctx.ui.notify(`Opened ${branch} in ${worktreePath}`, "info");
+				}
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}

@@ -26,6 +26,17 @@ Auto-detects `origin/main` or `origin/master` as the base. Override with `--base
 | `PI_BRANCH_WORKTREE_DIR` | `.worktree` | Directory for worktrees relative to repo root |
 | `PI_BRANCH_AGENT_COMMAND` | `exec pi` | Command to run in the new cmux workspace |
 
+### vertex-claude
+
+Registers Google Cloud Vertex AI as a provider for Claude models using the Anthropic Vertex SDK.
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `GOOGLE_CLOUD_PROJECT` | *(required)* | GCP project ID |
+| `GOOGLE_CLOUD_VERTEX_LOCATION` | `us-east5` | GCP region for Vertex AI |
+
+Requires GCP application default credentials (`gcloud auth application-default login`).
+
 ## Structure
 
 ```
