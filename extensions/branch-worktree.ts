@@ -117,8 +117,8 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 			}
 
 			const { branch, command } = parsed;
-			if (branch.startsWith("-") || branch.includes("..") || branch.includes("~") || branch.includes("^")) {
-				ctx.ui.notify(`Refusing suspicious branch name: ${branch}`, "error");
+			if (branch.startsWith("-") || branch.includes("..") || branch.includes("~") || branch.includes("^") || /\s/.test(branch)) {
+				ctx.ui.notify(`Invalid branch name: ${branch}`, "error");
 				return;
 			}
 
