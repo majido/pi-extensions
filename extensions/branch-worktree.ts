@@ -170,7 +170,7 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 		const now = new Date();
 		const date = now.toISOString().slice(0, 10);
 		const slug = sanitizeBranchForPath(branch).slice(0, 40);
-		return join(homedir(), ".claude", "retros", `${date}-${slug}.md`);
+		return join(homedir(), ".agents", "retros", `${date}-${slug}.md`);
 	}
 
 	pi.registerCommand("done", {
