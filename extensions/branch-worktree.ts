@@ -209,7 +209,7 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 				ctx.ui.notify("Running session retro...", "info");
 
 				const retroMessage = `${RETRO_PROMPT}\nWrite the retro to: ${retroPath}`;
-				await ctx.sendUserMessage(retroMessage, { deliverAs: "followUp" });
+				pi.sendUserMessage(retroMessage, { deliverAs: "followUp" });
 				await ctx.waitForIdle();
 			}
 
