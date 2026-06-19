@@ -6,7 +6,7 @@
  *
  * Commands:
  *   /branch <name> [--base ref] [--worktree-dir dir] [--command cmd]
- *   /done [--no-retro] [--keep-branch] — run retro, clean up worktree & workspace, exit
+ *   /branch-done [--no-retro] [--keep-branch] — run retro, clean up worktree & workspace, exit
  *
  * Env: PI_BRANCH_BASE, PI_BRANCH_WORKTREE_DIR, PI_BRANCH_AGENT_COMMAND
  */
@@ -70,14 +70,54 @@ function parseArgs(raw: string): ParsedArgs | null {
 	return { branch, base, worktreeRoot, command };
 }
 
-function parseSelectedWorkspaceName(listWorkspacesOutput: string, fallback: string): string {
-	const selected = listWorkspacesOutput.split("\n").find((line) => line.trimStart().startsWith("*"));
-	if (!selected) return fallback;
+const LEADING_EMOJI = /^((?:\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3|(?:\p{Extended_Pictographic}|\p{Emoji_Presentation})(?:\uFE0F|\uFE0E)?(?:\u200D(?:\p{Extended_Pictographic}|\p{Emoji_Presentation})(?:\uFE0F|\uFE0E)?)*)+)/u;
 
-	return selected
-		.replace(/^\*\s+workspace:\d+\s+/, "")
+function parseWorkspaceName(listWorkspacesOutput: string, workspaceRef: string | null | undefined, fallback: string): string {
+	if (!workspaceRef) return fallback;
+
+	const workspaceLine = listWorkspacesOutput.split("\n").find((line) => {
+		const normalized = line.replace(/^\*\s+/, "").trimStart();
+		return normalized.startsWith(`${workspaceRef} `);
+	});
+	if (!workspaceLine) return fallback;
+
+	return workspaceLine
+		.replace(/^\*\s+/, "")
+		.trimStart()
+		.slice(workspaceRef.length)
 		.replace(/\s+\[selected\]\s*$/, "")
 		.trim() || fallback;
+}
+
+function leadingEmojiPrefix(workspaceName: string): string {
+	const match = workspaceName.trimStart().match(LEADING_EMOJI);
+	return match?.[1] ? `${match[1]} ` : "";
+}
+
+function humanizeBranchName(branch: string): string {
+	const lastSegment = branch.split("/").filter(Boolean).pop() ?? branch;
+	return lastSegment
+		.replace(/[-_]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim() || branch;
+}
+
+function workspaceNameForBranch(branch: string, currentWorkspaceName: string): string {
+	return `${leadingEmojiPrefix(currentWorkspaceName)}${humanizeBranchName(branch)}`.trim();
+}
+
+type WorkspaceGroupList = {
+	groups?: Array<{
+		ref?: string;
+		member_workspace_refs?: string[];
+	}>;
+};
+
+function findWorkspaceGroup(groupListJson: string, workspaceRef: string | null | undefined): string | null {
+	if (!workspaceRef) return null;
+
+	const groupList = JSON.parse(groupListJson) as WorkspaceGroupList;
+	return groupList.groups?.find((group) => group.member_workspace_refs?.includes(workspaceRef))?.ref ?? null;
 }
 
 async function detectDefaultBase(
@@ -153,12 +193,13 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 		let workspaceRef: string | null = null;
 		let windowRef: string | null = null;
 		try {
-			const identifyRaw = await run("cmux", ["identify", "--no-caller"], cwd);
+			const identifyRaw = await run("cmux", ["identify"], cwd);
 			const identify = JSON.parse(identifyRaw) as {
+				caller?: { window_ref?: string; workspace_ref?: string };
 				focused?: { window_ref?: string; workspace_ref?: string };
 			};
-			windowRef = identify.focused?.window_ref ?? null;
-			workspaceRef = identify.focused?.workspace_ref ?? null;
+			windowRef = identify.caller?.window_ref ?? identify.focused?.window_ref ?? null;
+			workspaceRef = identify.caller?.workspace_ref ?? identify.focused?.workspace_ref ?? null;
 		} catch {
 			// cmux not available, that's fine
 		}
@@ -173,7 +214,7 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 		return join(homedir(), ".agents", "retros", `${date}-${slug}.md`);
 	}
 
-	pi.registerCommand("done", {
+	pi.registerCommand("branch-done", {
 		description: "Run session retro, clean up worktree & cmux workspace, and exit",
 		getArgumentCompletions: () => null,
 		handler: async (rawArgs, ctx) => {
@@ -235,11 +276,17 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 					}
 				}
 
-				// Close cmux workspace last (this kills panes including pi)
+				// Close cmux workspace only if this is the sole pane (safe to close)
 				if (workspaceRef && windowRef) {
 					try {
-						await run("cmux", ["close-workspace", "--workspace", workspaceRef, "--window", windowRef], mainRepoRoot);
-						// If we reach here, cmux didn't kill us — shut down gracefully
+						const panesOutput = await run("cmux", ["list-panes", "--workspace", workspaceRef, "--window", windowRef], mainRepoRoot);
+						const paneCount = panesOutput.split("\n").filter((line) => line.trim().startsWith("pane:") || line.trim().startsWith("* pane:")).length;
+						if (paneCount <= 1) {
+							await run("cmux", ["close-workspace", "--workspace", workspaceRef, "--window", windowRef], mainRepoRoot);
+							// If we reach here, cmux didn't kill us — shut down gracefully
+						} else {
+							ctx.ui.notify(`Workspace has ${paneCount} panes — skipping workspace close`, "info");
+						}
 					} catch (e) {
 						ctx.ui.notify(`cmux cleanup failed: ${e instanceof Error ? e.message : String(e)}`, "warning");
 					}
@@ -271,7 +318,13 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 			}
 
 			try {
-				const repoRoot = await run("git", ["rev-parse", "--show-toplevel"], ctx.cwd);
+				// Resolve the main repo root, not the worktree toplevel, to avoid nesting worktrees
+				const toplevel = await run("git", ["rev-parse", "--show-toplevel"], ctx.cwd);
+				const gitCommonDir = await run("git", ["rev-parse", "--git-common-dir"], ctx.cwd);
+				const resolvedCommon = resolve(toplevel, gitCommonDir);
+				const repoRoot = resolvedCommon === resolve(toplevel, ".git")
+					? toplevel
+					: resolve(resolvedCommon, "..");
 				const worktreeRoot = resolve(repoRoot, parsed.worktreeRoot);
 				const worktreePath = join(worktreeRoot, sanitizeBranchForPath(branch));
 
@@ -299,13 +352,21 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 
 				let workspaceCreated = false;
 				try {
-					const identifyRaw = await run("cmux", ["identify", "--no-caller"], repoRoot);
-					const identify = JSON.parse(identifyRaw) as { focused?: { window_ref?: string } };
-					const windowRef = identify.focused?.window_ref;
+					const identifyRaw = await run("cmux", ["identify"], repoRoot);
+					const identify = JSON.parse(identifyRaw) as {
+						caller?: { window_ref?: string; workspace_ref?: string };
+						focused?: { window_ref?: string; workspace_ref?: string };
+					};
+					const windowRef = identify.caller?.window_ref ?? identify.focused?.window_ref;
+					const currentWorkspaceRef = identify.caller?.workspace_ref ?? identify.focused?.workspace_ref;
 					if (!windowRef) throw new Error("Could not determine current cmux window");
 
-					const workspaceList = await run("cmux", ["list-workspaces"], repoRoot);
-					const workspaceName = parseSelectedWorkspaceName(workspaceList, branch);
+					const workspaceList = await run("cmux", ["list-workspaces", "--window", windowRef], repoRoot);
+					const currentWorkspaceName = parseWorkspaceName(workspaceList, currentWorkspaceRef, branch);
+					const workspaceName = workspaceNameForBranch(branch, currentWorkspaceName);
+					const currentWorkspaceGroup = await run("cmux", ["workspace-group", "list", "--json"], repoRoot)
+						.then((groupList) => findWorkspaceGroup(groupList, currentWorkspaceRef))
+						.catch(() => null);
 
 					await run(
 						"cmux",
@@ -326,6 +387,15 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 						60_000,
 					);
 					workspaceCreated = true;
+
+					if (currentWorkspaceGroup) {
+						try {
+							const newWorkspaceRef = await run("cmux", ["current-workspace", "--window", windowRef], repoRoot);
+							await run("cmux", ["workspace-group", "add", "--group", currentWorkspaceGroup, "--workspace", newWorkspaceRef], repoRoot);
+						} catch (error) {
+							ctx.ui.notify(`Failed to add workspace to cmux group: ${error instanceof Error ? error.message : String(error)}`, "warning");
+						}
+					}
 				} catch (cmuxError) {
 					await run("git", ["worktree", "remove", "--force", worktreePath], repoRoot).catch(() => {});
 					await pi.exec("git", ["branch", "-D", branch], { cwd: repoRoot, timeout: 10_000 }).catch(() => {});
