@@ -37,6 +37,17 @@ Registers Google Cloud Vertex AI as a provider for Claude models using the Anthr
 
 Requires GCP application default credentials (`gcloud auth application-default login`).
 
+Registered model IDs:
+
+- `vertex-claude/claude-opus-4-8`
+- `vertex-claude/claude-opus-4-7`
+- `vertex-claude/claude-opus-4-6`
+- `vertex-claude/claude-sonnet-4-8`
+- `vertex-claude/claude-sonnet-4-7`
+- `vertex-claude/claude-sonnet-4-6`
+- `vertex-claude/claude-haiku-4-6`
+- `vertex-claude/claude-haiku-4-5@20251001`
+
 ## Structure
 
 ```
