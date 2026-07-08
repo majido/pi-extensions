@@ -17,10 +17,58 @@ import { execSync } from "node:child_process";
 
 interface GitExtra {
   repo: string | null;
+  branch: string | null;
   isWorktree: boolean;
   dirty: boolean;
   ahead: number;
   behind: number;
+}
+
+function displayCwd(ctx: { cwd: string; sessionManager?: { getCwd?: () => string } }): string {
+  return ctx.sessionManager?.getCwd?.() || ctx.cwd || process.env.CMUX_AGENT_LAUNCH_CWD || process.cwd();
+}
+
+// Drop a common user/namespace prefix from branch names for display.
+// e.g. "mvalipour/fix-mcp-schema" → "fix-mcp-schema"
+const BRANCH_PREFIXES = ["mvalipour/"];
+function shortenBranch(branch: string): string {
+  for (const p of BRANCH_PREFIXES) {
+    if (branch.startsWith(p)) return branch.slice(p.length);
+  }
+  return branch;
+}
+
+// Compact model id: strip provider-ish "claude-" prefix for display.
+function shortenModelId(id: string): string {
+  return id.replace(/^claude-/, "");
+}
+
+// Chess-piece glyphs for thinking level, ascending by rank.
+// minimal ♙ · low ♟ · medium ♞ · high ♛ · xhigh(max) ♚
+const THINK_GLYPH: Record<string, string> = {
+  minimal: "♙",
+  low: "♟",
+  medium: "♞",
+  high: "♛",
+  xhigh: "♚",
+};
+function thinkingGlyph(level: string): string {
+  return THINK_GLYPH[level] ?? level;
+}
+
+// Cost: drop cents once value exceeds $1.
+function formatCost(cost: number): string {
+  if (!cost) return "$0";
+  return cost > 1 ? `$${Math.round(cost)}` : `$${cost.toFixed(2)}`;
+}
+
+// Parse an MCP extension status like "MCP: 2/6 servers" → { used, total }.
+function parseMcpStatus(text: string): { used: number; total: number } | null {
+  const m = text.match(/MCP:\s*(\d+)(?:\/(\d+))?/i);
+  if (!m) return null;
+  const used = parseInt(m[1], 10);
+  const total = m[2] ? parseInt(m[2], 10) : used;
+  return { used, total };
 }
 
 function getGitExtra(cwd: string): GitExtra {
@@ -53,11 +101,15 @@ function getGitExtra(cwd: string): GitExtra {
       "git status --porcelain=v2 --branch 2>/dev/null",
       opts,
     ).trim();
+    let branch: string | null = null;
     let dirty = false;
     let ahead = 0;
     let behind = 0;
     for (const line of statusRaw.split("\n")) {
-      if (line.startsWith("# branch.ab ")) {
+      if (line.startsWith("# branch.head ")) {
+        const head = line.slice("# branch.head ".length).trim();
+        branch = head && head !== "(detached)" ? head : "detached";
+      } else if (line.startsWith("# branch.ab ")) {
         const m = line.match(/\+(\d+) -(\d+)/);
         if (m) {
           ahead = parseInt(m[1], 10);
@@ -68,9 +120,9 @@ function getGitExtra(cwd: string): GitExtra {
       }
     }
 
-    return { repo, isWorktree, dirty, ahead, behind };
+    return { repo, branch, isWorktree, dirty, ahead, behind };
   } catch {
-    return { repo: null, isWorktree: false, dirty: false, ahead: 0, behind: 0 };
+    return { repo: null, branch: null, isWorktree: false, dirty: false, ahead: 0, behind: 0 };
   }
 }
 
@@ -121,13 +173,27 @@ function renderContextBar(
 // ── Extension ────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-  let gitExtra: GitExtra = { repo: null, isWorktree: false };
+  let gitExtra: GitExtra = { repo: null, branch: null, isWorktree: false, dirty: false, ahead: 0, behind: 0 };
+  let gitExtraCwd = "";
+  let gitExtraRefreshedAt = 0;
+
+  function refreshGitExtra(ctx: { cwd: string; sessionManager?: { getCwd?: () => string } }, maxAgeMs = 1000): GitExtra {
+    const cwd = displayCwd(ctx);
+    const now = Date.now();
+    if (cwd !== gitExtraCwd || now - gitExtraRefreshedAt > maxAgeMs) {
+      gitExtra = getGitExtra(cwd);
+      gitExtraCwd = cwd;
+      gitExtraRefreshedAt = now;
+    }
+    return gitExtra;
+  }
+
   pi.on("session_start", async (_event, ctx) => {
-    gitExtra = getGitExtra(ctx.cwd);
+    gitExtra = refreshGitExtra(ctx, 0);
 
     ctx.ui.setFooter((tui, theme, footerData) => {
       const unsub = footerData.onBranchChange(() => {
-        gitExtra = getGitExtra(ctx.cwd);
+        gitExtra = refreshGitExtra(ctx, 0);
         tui.requestRender();
       });
 
@@ -152,7 +218,10 @@ export default function (pi: ExtensionAPI) {
           // ═══════════════════════════════════════════════════════
 
           // Left: repo|branch *⇣⇡
-          const branch = footerData.getGitBranch();
+          // Resolve branch from git directly so worktrees don't inherit the main checkout's branch.
+          gitExtra = refreshGitExtra(ctx);
+          const rawBranch = gitExtra.branch ?? footerData.getGitBranch();
+          const branch = rawBranch ? shortenBranch(rawBranch) : rawBranch;
           const repo = gitExtra.repo;
           const wt = gitExtra.isWorktree;
           let left = "";
@@ -171,19 +240,31 @@ export default function (pi: ExtensionAPI) {
             left = theme.fg("dim", repo);
           }
 
-          // Right: context bar + cost + model·thinking
-          const modelId = ctx.model?.id ?? "no-model";
+          // Right: context bar + cost + model · thinking · MCP
+          const modelId = shortenModelId(ctx.model?.id ?? "no-model");
           const thinking = pi.getThinkingLevel();
           const hasReasoning = (ctx.model as any)?.reasoning;
           const thinkSuffix = hasReasoning
             ? thinking === "off"
-              ? "·thinking off"
-              : `·${thinking}`
+              ? ""
+              : ` ${thinkingGlyph(thinking)}`
             : "";
-          const costStr = totalCost ? `$${totalCost.toFixed(2)}` : "$0";
+          const costStr = formatCost(totalCost);
           const bar = renderContextBar(pct, theme);
+
+          // MCP status: pull out of extension statuses, show inline only when used.
+          const statuses = footerData.getExtensionStatuses();
+          let mcpSuffix = "";
+          const mcpRaw = statuses.get("mcp");
+          if (mcpRaw) {
+            const parsed = parseMcpStatus(mcpRaw.replace(/\x1b\[[0-9;]*m/g, ""));
+            if (parsed && parsed.used > 0) {
+              mcpSuffix = ` · MCP ${parsed.used}/${parsed.total}`;
+            }
+          }
+
           const right =
-            bar + " " + theme.fg("dim", `${costStr} ${modelId}${thinkSuffix}`);
+            bar + " " + theme.fg("dim", `${costStr} ${modelId}${thinkSuffix}${mcpSuffix}`);
 
           const lw = visibleWidth(left);
           const rw = visibleWidth(right);
@@ -195,9 +276,12 @@ export default function (pi: ExtensionAPI) {
           // ═══════════════════════════════════════════════════════
           // Line 2:  extension statuses (MCP, etc.)
           // ═══════════════════════════════════════════════════════
-          const statuses = footerData.getExtensionStatuses();
-          if (statuses.size > 0) {
-            const sorted = Array.from(statuses.entries())
+          // MCP is rendered inline on line 1; exclude it here.
+          const otherStatuses = Array.from(statuses.entries()).filter(
+            ([k]) => k !== "mcp",
+          );
+          if (otherStatuses.length > 0) {
+            const sorted = otherStatuses
               .sort(([a], [b]) => a.localeCompare(b))
               .map(([, t]) =>
                 t.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim(),
