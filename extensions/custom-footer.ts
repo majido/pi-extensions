@@ -174,8 +174,13 @@ function renderContextBar(
   const empty = BAR_WIDTH - used;
 
   // Shaded track instead of [] brackets — same block-glyph family as █/▎,
-  // so the bar has a uniform height.
-  return filledStr + theme.fg("dim", "░".repeat(Math.max(0, empty)));
+  // so the bar has a uniform height. ▕ is a mostly-empty left cap that keeps
+  // sub-cell breathing room between the % label and the fill.
+  return (
+    theme.fg("dim", "▕") +
+    filledStr +
+    theme.fg("dim", "░".repeat(Math.max(0, empty)))
+  );
 }
 
 // ── Responsive layout (pure, exported for tests) ───────────────────

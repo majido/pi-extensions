@@ -14,12 +14,12 @@ import {
 } from "./custom-footer.ts";
 
 // Plain (ANSI-free) segments matching the example footer:
-// iris ⑂ fix-mcp-schema-sanitization      0%░░░░░░░░░░ $0 fable-5 ♞
+// iris ⑂ fix-mcp-schema-sanitization      0%▕░░░░░░░░░░ $0 fable-5 ♞
 const SEG: FooterSegments = {
   repo: "iris",
   sep: " ⑂ ",
   branch: "fix-mcp-schema-sanitization",
-  bar: "░░░░░░░░░░",
+  bar: "▕░░░░░░░░░░",
   pct: "0%",
   cost: "$0",
   model: "fable-5 ♞",
@@ -36,7 +36,7 @@ function widthOf(line: string): number {
 
 test("composes full footer, left/right justified to width", () => {
   const line = composeFooterLine(SEG, ALL_ON, 80);
-  assert.equal(line, "iris ⑂ fix-mcp-schema-sanitization                     0%░░░░░░░░░░ $0 fable-5 ♞");
+  assert.equal(line, "iris ⑂ fix-mcp-schema-sanitization                    0%▕░░░░░░░░░░ $0 fable-5 ♞");
   assert.equal(widthOf(line), 80);
 });
 
@@ -61,7 +61,7 @@ test("omits separator when repo is hidden", () => {
 
 test("right side only: stays right-aligned via left padding", () => {
   const line = composeFooterLine(SEG, { ...ALL_ON, repo: false, branch: false }, 60);
-  assert.equal(line, " ".repeat(35) + "0%░░░░░░░░░░ $0 fable-5 ♞");
+  assert.equal(line, " ".repeat(34) + "0%▕░░░░░░░░░░ $0 fable-5 ♞");
   assert.equal(widthOf(line), 60);
 });
 
@@ -77,7 +77,7 @@ test("left side only: no gap padding", () => {
 test("handles empty repo/branch segments (right-aligned)", () => {
   const seg = { ...SEG, repo: "", branch: "" };
   const line = composeFooterLine(seg, ALL_ON, 60);
-  assert.equal(line.trimStart(), "0%░░░░░░░░░░ $0 fable-5 ♞");
+  assert.equal(line.trimStart(), "0%▕░░░░░░░░░░ $0 fable-5 ♞");
   assert.equal(widthOf(line), 60);
 });
 
@@ -95,7 +95,7 @@ test("wide terminal shows everything", () => {
 });
 
 test("first drop: bar visual", () => {
-  // Full line needs 60 (34 left + 1 gap + 25 right); without bar it's 50.
+  // Full line needs 61 (34 left + 1 gap + 26 right); without bar it's 50.
   const line = fitFooterLine(SEG, 55);
   assert.ok(!line.includes(SEG.bar));
   assert.ok(line.includes(SEG.repo));
