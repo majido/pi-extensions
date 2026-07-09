@@ -20,7 +20,10 @@ Creates a git worktree from a base branch and opens it in a sibling [cmux](https
 /worktree-status
 ```
 
-Auto-detects `origin/main` or `origin/master` as the base. Override with `--base` or the `PI_BRANCH_BASE` env var. `/branch-done` runs a session retro (written to `~/.agents/retros/`), then removes the worktree, deletes the branch, and closes the cmux workspace once the retro finishes.
+Auto-detects `origin/main` or `origin/master` as the base. `/branch-done` runs a session retro (written to `~/.agents/retros/`), then removes the worktree, deletes the branch, and closes the cmux workspace once the retro finishes.
+
+<details>
+<summary>Env vars</summary>
 
 | Env var | Default | Description |
 |---------|---------|-------------|
@@ -28,23 +31,26 @@ Auto-detects `origin/main` or `origin/master` as the base. Override with `--base
 | `PI_BRANCH_WORKTREE_DIR` | `.worktree` | Directory for worktrees relative to repo root |
 | `PI_BRANCH_AGENT_COMMAND` | `exec pi` | Command to run in the new cmux workspace |
 
+</details>
+
 ### custom-footer
 
 Replaces the default footer with a compact, single-line layout: repo/branch with git indicators on the left, context usage, cost, and model on the right.
 
 ![custom-footer](docs/screenshots/custom-footer.png)
 
-```
-iris ⑂ fix-mcp-schema-sanitization        62%▕██████▎░░░ $0.42 fable-5 ♞
-```
+Responsive: on narrow terminals, segments hide progressively — bar, repo, cost, branch, model, then context % — and the right block stays right-aligned.
+
+<details>
+<summary>Display details</summary>
 
 - **Git indicators**: `*` dirty, `⇣`/`⇡` behind/ahead, `⑂` worktree separator (`|` for regular checkouts). Branch resolved per-worktree.
 - **Context bar**: eighth-block resolution (`▏▎▍▌▋▊▉█`) over a `░` track, with a color gradient from success → warning → error as context fills.
 - **Thinking level**: chess glyphs, ascending by rank — ♙ minimal · ♟ low · ♞ medium · ♛ high · ♚ max.
-- **Responsive**: on narrow terminals, segments hide progressively — bar, repo, cost, branch, model, then context % — and the right block stays right-aligned.
 - **MCP status** is inlined (`· MCP 2/6`) when servers are connected; other extension statuses render on a second line.
+- Tests: `npm test` (layout logic is exported as pure functions in `extensions/custom-footer.test.ts`).
 
-Tests: `npm test` (layout logic is exported as pure functions, covered by `extensions/custom-footer.test.ts`).
+</details>
 
 ### compact-bash
 
@@ -66,30 +72,19 @@ Display-only; reads state from `~/.cache/pr-sitter/`, refreshes every 30s.
 
 ### vertex-claude
 
-Registers Google Cloud Vertex AI as a provider for Claude models using the Anthropic Vertex SDK.
+Registers Google Cloud Vertex AI as a provider for Claude models (Opus, Sonnet, Haiku, Fable) using the Anthropic Vertex SDK. Requires `GOOGLE_CLOUD_PROJECT` and application default credentials (`gcloud auth application-default login`). Run `/model` in pi to see the registered `vertex-claude/*` models.
+
+<details>
+<summary>Configuration</summary>
 
 | Env var | Default | Description |
 |---------|---------|-------------|
 | `GOOGLE_CLOUD_PROJECT` | *(required)* | GCP project ID |
 | `GOOGLE_CLOUD_VERTEX_LOCATION` | `us-east5` | GCP region for Vertex AI |
 
-Requires GCP application default credentials (`gcloud auth application-default login`). Models that are only served on the `global` Vertex endpoint are routed there automatically.
+Models that are only served on the `global` Vertex endpoint are routed there automatically.
 
-Registered model IDs:
-
-- `vertex-claude/claude-fable-5`
-- `vertex-claude/claude-opus-4-8`
-- `vertex-claude/claude-opus-4-7`
-- `vertex-claude/claude-opus-4-6`
-- `vertex-claude/claude-opus-4-5`
-- `vertex-claude/claude-opus-4-1`
-- `vertex-claude/claude-opus-4`
-- `vertex-claude/claude-sonnet-5`
-- `vertex-claude/claude-sonnet-4-6`
-- `vertex-claude/claude-sonnet-4-5`
-- `vertex-claude/claude-sonnet-4`
-- `vertex-claude/claude-haiku-4-5`
-- `vertex-claude/claude-3-5-haiku@20241022`
+</details>
 
 ## Prompts
 
@@ -105,7 +100,7 @@ Registered model IDs:
 ## Structure
 
 ```
-extensions/    → pi extensions (.ts) + tests (*.test.ts, excluded from loading)
+extensions/    → pi extensions (.ts)
 skills/        → agent skills (SKILL.md folders)
 prompts/       → prompt templates (.md)
 themes/        → themes (.json)
