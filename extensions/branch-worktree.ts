@@ -11,7 +11,7 @@
  * Env: PI_BRANCH_BASE, PI_BRANCH_WORKTREE_DIR, PI_BRANCH_AGENT_COMMAND
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -177,6 +177,15 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 		windowRef: string | null;
 	};
 
+	type BranchDoneCleanup = {
+		info: WorktreeInfo | null;
+		keepBranch: boolean;
+		retroMessage?: string;
+		retroStarted: boolean;
+	};
+
+	let pendingBranchDoneCleanup: BranchDoneCleanup | null = null;
+
 	async function detectWorktreeInfo(cwd: string): Promise<WorktreeInfo | null> {
 		const toplevel = await run("git", ["rev-parse", "--show-toplevel"], cwd);
 		const gitCommonDir = await run("git", ["rev-parse", "--git-common-dir"], cwd);
@@ -214,6 +223,66 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 		return join(homedir(), ".agents", "retros", `${date}-${slug}.md`);
 	}
 
+	async function cleanupBranchDone(ctx: ExtensionContext, request: BranchDoneCleanup): Promise<void> {
+		const { info, keepBranch } = request;
+
+		if (info) {
+			const { worktreePath, mainRepoRoot, branch, workspaceRef, windowRef } = info;
+
+			// Remove worktree first (while our process is still alive)
+			try {
+				await run("git", ["worktree", "remove", "--force", worktreePath], mainRepoRoot, 120_000);
+				ctx.ui.notify(`Removed worktree: ${worktreePath}`, "info");
+			} catch (e) {
+				ctx.ui.notify(`Worktree removal failed: ${e instanceof Error ? e.message : String(e)}`, "warning");
+			}
+
+			// Delete local branch (unless --keep-branch)
+			if (!keepBranch) {
+				try {
+					await run("git", ["branch", "-D", branch], mainRepoRoot);
+					ctx.ui.notify(`Deleted branch: ${branch}`, "info");
+				} catch {
+					// Branch may already be deleted or merged, ignore
+				}
+			}
+
+			// Close cmux workspace only if this is the sole pane (safe to close)
+			if (workspaceRef && windowRef) {
+				try {
+					const panesOutput = await run("cmux", ["list-panes", "--workspace", workspaceRef, "--window", windowRef], mainRepoRoot);
+					const paneCount = panesOutput.split("\n").filter((line) => line.trim().startsWith("pane:") || line.trim().startsWith("* pane:")).length;
+					if (paneCount <= 1) {
+						await run("cmux", ["close-workspace", "--workspace", workspaceRef, "--window", windowRef], mainRepoRoot);
+						// If we reach here, cmux didn't kill us — shut down gracefully
+					} else {
+						ctx.ui.notify(`Workspace has ${paneCount} panes — skipping workspace close`, "info");
+					}
+				} catch (e) {
+					ctx.ui.notify(`cmux cleanup failed: ${e instanceof Error ? e.message : String(e)}`, "warning");
+				}
+			}
+		}
+
+		ctx.shutdown();
+	}
+
+	pi.on("agent_start", (event) => {
+		const pending = pendingBranchDoneCleanup;
+		if (pending && pending.retroMessage === event.prompt) {
+			pending.retroStarted = true;
+		}
+	});
+
+	pi.on("agent_end", async (_event, ctx) => {
+		if (!pendingBranchDoneCleanup?.retroStarted) return;
+
+		const request = pendingBranchDoneCleanup;
+		pendingBranchDoneCleanup = null;
+		ctx.ui.notify("Session retro complete; cleaning up branch...", "info");
+		await cleanupBranchDone(ctx, request);
+	});
+
 	pi.registerCommand("branch-done", {
 		description: "Run session retro, clean up worktree & cmux workspace, and exit",
 		getArgumentCompletions: () => null,
@@ -221,6 +290,11 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 			const flags = rawArgs.trim().split(/\s+/).filter(Boolean);
 			const noRetro = flags.includes("--no-retro");
 			const keepBranch = flags.includes("--keep-branch");
+
+			if (pendingBranchDoneCleanup) {
+				ctx.ui.notify("branch-done cleanup is already pending; wait for the retro to finish.", "warning");
+				return;
+			}
 
 			let info: WorktreeInfo | null = null;
 			try {
@@ -241,60 +315,25 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 			);
 			if (!confirmed) return;
 
-			// Step 1: Run retro
-			if (!noRetro) {
-				const retroPath = retroFilePath(branchLabel);
-				const retroDir = resolve(retroPath, "..");
-				await mkdir(retroDir, { recursive: true });
+			if (noRetro) {
+				await cleanupBranchDone(ctx, { info, keepBranch, retroStarted: false });
+				return;
+			}
 
-				ctx.ui.notify("Running session retro...", "info");
+			const retroPath = retroFilePath(branchLabel);
+			const retroDir = resolve(retroPath, "..");
+			await mkdir(retroDir, { recursive: true });
 
-				const retroMessage = `${RETRO_PROMPT}\nWrite the retro to: ${retroPath}`;
+			const retroMessage = `${RETRO_PROMPT}\nWrite the retro to: ${retroPath}`;
+			pendingBranchDoneCleanup = { info, keepBranch, retroMessage, retroStarted: false };
+
+			try {
 				pi.sendUserMessage(retroMessage, { deliverAs: "followUp" });
-				await ctx.waitForIdle();
+				ctx.ui.notify("Running session retro; cleanup will continue after it finishes.", "info");
+			} catch (e) {
+				pendingBranchDoneCleanup = null;
+				ctx.ui.notify(`Failed to start session retro: ${e instanceof Error ? e.message : String(e)}`, "error");
 			}
-
-			// Step 2: Clean up worktree, branch, and workspace
-			if (info) {
-				const { worktreePath, mainRepoRoot, branch, workspaceRef, windowRef } = info;
-
-				// Remove worktree first (while our process is still alive)
-				try {
-					await run("git", ["worktree", "remove", "--force", worktreePath], mainRepoRoot, 120_000);
-					ctx.ui.notify(`Removed worktree: ${worktreePath}`, "info");
-				} catch (e) {
-					ctx.ui.notify(`Worktree removal failed: ${e instanceof Error ? e.message : String(e)}`, "warning");
-				}
-
-				// Delete local branch (unless --keep-branch)
-				if (!keepBranch) {
-					try {
-						await run("git", ["branch", "-D", branch], mainRepoRoot);
-						ctx.ui.notify(`Deleted branch: ${branch}`, "info");
-					} catch {
-						// Branch may already be deleted or merged, ignore
-					}
-				}
-
-				// Close cmux workspace only if this is the sole pane (safe to close)
-				if (workspaceRef && windowRef) {
-					try {
-						const panesOutput = await run("cmux", ["list-panes", "--workspace", workspaceRef, "--window", windowRef], mainRepoRoot);
-						const paneCount = panesOutput.split("\n").filter((line) => line.trim().startsWith("pane:") || line.trim().startsWith("* pane:")).length;
-						if (paneCount <= 1) {
-							await run("cmux", ["close-workspace", "--workspace", workspaceRef, "--window", windowRef], mainRepoRoot);
-							// If we reach here, cmux didn't kill us — shut down gracefully
-						} else {
-							ctx.ui.notify(`Workspace has ${paneCount} panes — skipping workspace close`, "info");
-						}
-					} catch (e) {
-						ctx.ui.notify(`cmux cleanup failed: ${e instanceof Error ? e.message : String(e)}`, "warning");
-					}
-				}
-			}
-
-			// Step 3: Shut down pi (fallback if cmux close didn't terminate us)
-			ctx.shutdown();
 		},
 	});
 
