@@ -103,9 +103,14 @@ Never apply every suggestion blindly. Keep changes minimal and validated.
   - If you will reschedule: now + `intervalMin` minutes (ISO).
   - If paused or stopping: set `nextCheckAt` to null.
 
-Write the updated JSON back to `~/.cache/pr-sitter/$1.json`. The pr-sitter status
-bar extension reads `state`, `prShort`, `pr`, `lastCheckAt`, `nextCheckAt`,
-`needsDecision`, and `status` from this file.
+Write the updated JSON back to `~/.cache/pr-sitter/$1.json`. **Preserve the
+existing `cwd` and `sessionId` fields unchanged** — they scope the status widget
+to the owning session and must survive every rewrite. If `cwd` is missing
+(legacy file from before scoping existed), backfill it with the current repo root
+(`git rev-parse --show-toplevel`) so the widget can scope this sitter. Never
+write `sessionId` yourself; the extension stamps it. The pr-sitter status bar
+extension reads `state`, `prShort`, `pr`, `lastCheckAt`, `nextCheckAt`,
+`needsDecision`, `status`, `cwd`, and `sessionId` from this file.
 
 ## 7. Reschedule or pause
 

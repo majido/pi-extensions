@@ -69,6 +69,9 @@ PR Sitter: #39 iris • watching • next check in 3m (last one 43s ago)
 ```
 
 Display-only; reads state from `~/.cache/pr-sitter/`, refreshes every 30s.
+Scoped to the owning session: a sitter is shown only in the session/worktree
+that armed it (matched by `sessionId`, adopted from `cwd` for legacy files), so
+status never bleeds into unrelated sessions sharing the global cache dir.
 
 ### vertex-claude
 

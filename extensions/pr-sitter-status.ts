@@ -12,7 +12,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { hyperlink, truncateToWidth } from "@earendil-works/pi-tui";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -31,6 +31,11 @@ type Sitter = {
   needsDecision?: unknown[];
   lastCheckAt?: string | null;
   nextCheckAt?: string | null;
+  // Ownership: a sitter belongs to the session that armed it. Legacy files
+  // predate these fields and are matched by cwd (then adopted) instead.
+  sessionId?: string;
+  cwd?: string;
+  _file?: string;
 };
 
 const STATES: Record<string, { color: string; rank: number; label: string }> = {
@@ -56,12 +61,38 @@ function readSitters(): Sitter[] {
   const out: Sitter[] = [];
   for (const f of files) {
     try {
-      out.push(JSON.parse(readFileSync(join(STATE_DIR, f), "utf-8")) as Sitter);
+      const s = JSON.parse(readFileSync(join(STATE_DIR, f), "utf-8")) as Sitter;
+      s._file = join(STATE_DIR, f);
+      out.push(s);
     } catch {
       // skip half-written file
     }
   }
   return out;
+}
+
+// A sitter belongs to the session that armed it. Show it only in that session
+// so status does not bleed into unrelated sessions sharing the global cache dir.
+//
+// - New files carry `sessionId`: match it exactly.
+// - Legacy files (no `sessionId`) are matched by `cwd`; when the current
+//   session's cwd matches, we adopt the file by stamping our `sessionId` so it
+//   is unambiguously scoped from then on.
+function ownedByCurrentSession(s: Sitter, sessionId?: string, cwd?: string): boolean {
+  if (s.sessionId) return !!sessionId && s.sessionId === sessionId;
+  // Legacy file with cwd but no sessionId: fall back to cwd. Adopt it if we can.
+  if (s.cwd && cwd && s.cwd === cwd) {
+    if (sessionId && s._file) {
+      try {
+        writeFileSync(s._file, JSON.stringify({ ...s, _file: undefined, sessionId }, null, 2));
+        s.sessionId = sessionId;
+      } catch {
+        // best-effort adoption; still show it this tick via the cwd match below
+      }
+    }
+    return true;
+  }
+  return false;
 }
 
 const isTerminal = (s: Sitter) => s.state === "merged" || s.state === "closed";
@@ -72,9 +103,10 @@ function isStale(s: Sitter): boolean {
   return Number.isNaN(t) || Date.now() - t > TERMINAL_LINGER_MS;
 }
 
-function activeSitters(): Sitter[] {
+function activeSitters(sessionId?: string, cwd?: string): Sitter[] {
   return readSitters()
     .filter((s) => !isStale(s))
+    .filter((s) => ownedByCurrentSession(s, sessionId, cwd))
     .sort((a, b) => (STATES[b.state ?? ""]?.rank ?? 0) - (STATES[a.state ?? ""]?.rank ?? 0));
 }
 
@@ -152,7 +184,15 @@ export default function (pi: ExtensionAPI) {
 
   const render = (ctx: any) => {
     savedCtx = ctx;
-    const sitters = activeSitters();
+    let sessionId: string | undefined;
+    let cwd: string | undefined;
+    try {
+      sessionId = ctx?.sessionManager?.getSessionId?.();
+      cwd = ctx?.sessionManager?.getCwd?.();
+    } catch {
+      // stale ctx; treat as no identity and show nothing
+    }
+    const sitters = activeSitters(sessionId, cwd);
     if (sitters.length === 0) {
       ctx.ui.setWidget(WIDGET_ID, undefined);
       return;

@@ -99,6 +99,7 @@ Optional argument: `$@` — a focus hint for cleanup, or a target branch name.
      "pr": <number>,
      "url": "<pr-url>",
      "branch": "<branch>",
+     "cwd": "<repo-root-abs-path>",
      "state": "created",
      "intervalMin": 1,
      "seenCommentIds": [],
@@ -115,6 +116,12 @@ Optional argument: `$@` — a focus hint for cleanup, or a target branch name.
    ```
 
    Use a stable `stateKey` = `<owner>__<repo>__<pr>` (sanitize `/` to `__`).
+
+   **Ownership / scoping.** Set `cwd` to the absolute repo root (`pwd` /
+   `git rev-parse --show-toplevel`). This scopes the status widget to the
+   session/worktree that armed the sitter — the `pr-sitter-status` extension
+   adopts the file by `cwd` and stamps a `sessionId` so it never bleeds into
+   unrelated sessions. Do not hand-write `sessionId`; the extension owns it.
 
 8. **Arm the monitor.** First run `schedule_prompt` with `action: "cleanup"` so old
    completed one-off sitter jobs are removed before creating another scheduled job.
