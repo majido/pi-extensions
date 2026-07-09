@@ -88,6 +88,10 @@ Models that are only served on the `global` Vertex endpoint are routed there aut
 
 ## Prompts
 
+### Workflow commands (from agent-skills)
+
+`/plan` · `/build [auto]` · `/test` · `/review` · `/code-simplify` — planning, incremental TDD implementation, testing, five-axis code review, and behavior-preserving simplification. Ported from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) (MIT), together with the 10 skills that power them and shared checklists in `references/`. See `docs/RETIRED.md` for the personal skills they replace.
+
 ### pr-sitter
 
 `/pr-sitter [stop|status|focus]` cleans up the working tree, commits, opens a draft PR, then babysits CI and reviews with exponentially backed-off monitor cycles (`pr-sitter-monitor` runs each cycle via scheduled prompts). Straightforward fixes are pushed as new commits; anything ambiguous is escalated.
@@ -96,6 +100,7 @@ Models that are only served on the `global` Vertex endpoint are routed there aut
 
 - **commit** — Conventional Commits guidance; read before making git commits.
 - **skillify** — turn a repeatable workflow from the current session into a reusable skill draft.
+- **agent-skills adoption** — 10 skills from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills): planning-and-task-breakdown, incremental-implementation, test-driven-development, code-review-and-quality, code-simplification, debugging-and-error-recovery, doubt-driven-development, browser-testing-with-devtools, security-and-hardening, performance-optimization. Shared checklists live in `references/` and are linked from skills via `../../references/`.
 
 ## Structure
 
@@ -103,6 +108,7 @@ Models that are only served on the `global` Vertex endpoint are routed there aut
 extensions/    → pi extensions (.ts)
 skills/        → agent skills (SKILL.md folders)
 prompts/       → prompt templates (.md)
+references/    → shared checklists linked from skills
 themes/        → themes (.json)
 docs/          → screenshots and docs
 ```
