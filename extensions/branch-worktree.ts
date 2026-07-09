@@ -1,24 +1,26 @@
 /**
  * Branch Worktree Extension
  *
- * Creates a git worktree from a base branch and opens it in a sibling cmux workspace.
+ * Creates a git worktree from a base branch, optionally opening it in a sibling cmux workspace.
  * Auto-detects origin/main or origin/master as the base branch.
  *
  * Commands:
- *   /branch <name> [--base ref] [--worktree-dir dir] [--command cmd]
- *   /branch-done [--no-retro] [--keep-branch] — run retro, clean up worktree & workspace, exit
+ *   /branch <name> [--base ref] [--worktree-dir dir] — create branch + worktree only
+ *   /branch-and-split <name> [--base ref] [--worktree-dir dir] [--command cmd] — also open cmux workspace
+ *   /branch-done [--no-retro] [--keep-branch] — run retro, clean up worktree (& workspace if /branch-and-split was used), exit
  *
  * Env: PI_BRANCH_BASE, PI_BRANCH_WORKTREE_DIR, PI_BRANCH_AGENT_COMMAND
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 
 const DEFAULT_WORKTREE_DIR = process.env.PI_BRANCH_WORKTREE_DIR ?? ".worktree";
 const DEFAULT_AGENT_COMMAND = process.env.PI_BRANCH_AGENT_COMMAND ?? "exec pi";
+const CMUX_MARKER_FILE = "branch-worktree-cmux";
 
 type ParsedArgs = {
 	branch: string;
@@ -198,19 +200,28 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 		const mainRepoRoot = resolve(resolvedCommon, "..");
 		const branch = await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], cwd);
 
-		// Detect cmux workspace for this worktree
+		// Detect cmux workspace for this worktree — only if /branch-and-split created one
+		// (marker file in the worktree's git dir stores the created workspace ref)
 		let workspaceRef: string | null = null;
 		let windowRef: string | null = null;
-		try {
-			const identifyRaw = await run("cmux", ["identify"], cwd);
-			const identify = JSON.parse(identifyRaw) as {
-				caller?: { window_ref?: string; workspace_ref?: string };
-				focused?: { window_ref?: string; workspace_ref?: string };
-			};
-			windowRef = identify.caller?.window_ref ?? identify.focused?.window_ref ?? null;
-			workspaceRef = identify.caller?.workspace_ref ?? identify.focused?.workspace_ref ?? null;
-		} catch {
-			// cmux not available, that's fine
+		const gitDir = await run("git", ["rev-parse", "--absolute-git-dir"], cwd);
+		const markerPath = join(gitDir, CMUX_MARKER_FILE);
+		if (existsSync(markerPath)) {
+			const markedWorkspaceRef = readFileSync(markerPath, "utf8").trim();
+			try {
+				const identifyRaw = await run("cmux", ["identify"], cwd);
+				const identify = JSON.parse(identifyRaw) as {
+					caller?: { window_ref?: string; workspace_ref?: string };
+					focused?: { window_ref?: string; workspace_ref?: string };
+				};
+				const currentWorkspaceRef = identify.caller?.workspace_ref ?? identify.focused?.workspace_ref ?? null;
+				if (markedWorkspaceRef && currentWorkspaceRef === markedWorkspaceRef) {
+					windowRef = identify.caller?.window_ref ?? identify.focused?.window_ref ?? null;
+					workspaceRef = currentWorkspaceRef;
+				}
+			} catch {
+				// cmux not available, that's fine
+			}
 		}
 
 		return { worktreePath: toplevel, mainRepoRoot, branch, workspaceRef, windowRef };
@@ -337,57 +348,103 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	type BranchCreateResult = {
+		repoRoot: string;
+		worktreePath: string;
+		branch: string;
+		base: string;
+	};
+
+	async function createBranchWorktree(parsed: ParsedArgs, ctx: ExtensionContext): Promise<BranchCreateResult> {
+		const { branch } = parsed;
+
+		// Resolve the main repo root, not the worktree toplevel, to avoid nesting worktrees
+		const toplevel = await run("git", ["rev-parse", "--show-toplevel"], ctx.cwd);
+		const gitCommonDir = await run("git", ["rev-parse", "--git-common-dir"], ctx.cwd);
+		const resolvedCommon = resolve(toplevel, gitCommonDir);
+		const repoRoot = resolvedCommon === resolve(toplevel, ".git")
+			? toplevel
+			: resolve(resolvedCommon, "..");
+		const worktreeRoot = resolve(repoRoot, parsed.worktreeRoot);
+		const worktreePath = join(worktreeRoot, sanitizeBranchForPath(branch));
+
+		await run("git", ["fetch", "--prune", "--all"], repoRoot, 180_000);
+
+		const base = parsed.base ?? await detectDefaultBase(run, repoRoot);
+
+		ctx.ui.notify(`Creating ${branch} from ${base}...`, "info");
+		mkdirSync(worktreeRoot, { recursive: true });
+
+		if (existsSync(worktreePath)) {
+			throw new Error(`Worktree directory already exists: ${worktreePath}`);
+		}
+
+		const existingBranch = await pi.exec("git", ["show-ref", "--verify", `refs/heads/${branch}`], {
+			cwd: repoRoot,
+			timeout: 10_000,
+		});
+		if (existingBranch.code === 0) {
+			throw new Error(`Branch already exists: ${branch}`);
+		}
+
+		await run("git", ["rev-parse", "--verify", base], repoRoot);
+		await run("git", ["worktree", "add", "-b", branch, worktreePath, base], repoRoot, 180_000);
+
+		return { repoRoot, worktreePath, branch, base };
+	}
+
+	function isInvalidBranchName(branch: string): boolean {
+		return branch.startsWith("-") || branch.includes("..") || branch.includes("~") || branch.includes("^") || /\s/.test(branch);
+	}
+
 	pi.registerCommand("branch", {
+		description: "Create a git worktree branch (no cmux workspace)",
+		getArgumentCompletions: () => null,
+		handler: async (rawArgs, ctx) => {
+			const parsed = parseArgs(rawArgs);
+			if (!parsed) {
+				ctx.ui.notify(
+					"Usage: /branch <branch-name> [--base origin/main] [--worktree-dir .worktree]",
+					"error",
+				);
+				return;
+			}
+
+			if (isInvalidBranchName(parsed.branch)) {
+				ctx.ui.notify(`Invalid branch name: ${parsed.branch}`, "error");
+				return;
+			}
+
+			try {
+				const { branch, worktreePath } = await createBranchWorktree(parsed, ctx);
+				ctx.ui.notify(`Created ${branch} at ${worktreePath}`, "info");
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
+
+	pi.registerCommand("branch-and-split", {
 		description: "Create a git worktree branch and open it in a sibling cmux workspace",
 		getArgumentCompletions: () => null,
 		handler: async (rawArgs, ctx) => {
 			const parsed = parseArgs(rawArgs);
 			if (!parsed) {
 				ctx.ui.notify(
-					"Usage: /branch <branch-name> [--base origin/main] [--worktree-dir .worktree] [--command pi]",
+					"Usage: /branch-and-split <branch-name> [--base origin/main] [--worktree-dir .worktree] [--command pi]",
 					"error",
 				);
 				return;
 			}
 
 			const { branch, command } = parsed;
-			if (branch.startsWith("-") || branch.includes("..") || branch.includes("~") || branch.includes("^") || /\s/.test(branch)) {
+			if (isInvalidBranchName(branch)) {
 				ctx.ui.notify(`Invalid branch name: ${branch}`, "error");
 				return;
 			}
 
 			try {
-				// Resolve the main repo root, not the worktree toplevel, to avoid nesting worktrees
-				const toplevel = await run("git", ["rev-parse", "--show-toplevel"], ctx.cwd);
-				const gitCommonDir = await run("git", ["rev-parse", "--git-common-dir"], ctx.cwd);
-				const resolvedCommon = resolve(toplevel, gitCommonDir);
-				const repoRoot = resolvedCommon === resolve(toplevel, ".git")
-					? toplevel
-					: resolve(resolvedCommon, "..");
-				const worktreeRoot = resolve(repoRoot, parsed.worktreeRoot);
-				const worktreePath = join(worktreeRoot, sanitizeBranchForPath(branch));
-
-				await run("git", ["fetch", "--prune", "--all"], repoRoot, 180_000);
-
-				const base = parsed.base ?? await detectDefaultBase(run, repoRoot);
-
-				ctx.ui.notify(`Creating ${branch} from ${base}...`, "info");
-				mkdirSync(worktreeRoot, { recursive: true });
-
-				if (existsSync(worktreePath)) {
-					throw new Error(`Worktree directory already exists: ${worktreePath}`);
-				}
-
-				const existingBranch = await pi.exec("git", ["show-ref", "--verify", `refs/heads/${branch}`], {
-					cwd: repoRoot,
-					timeout: 10_000,
-				});
-				if (existingBranch.code === 0) {
-					throw new Error(`Branch already exists: ${branch}`);
-				}
-
-				await run("git", ["rev-parse", "--verify", base], repoRoot);
-				await run("git", ["worktree", "add", "-b", branch, worktreePath, base], repoRoot, 180_000);
+				const { repoRoot, worktreePath } = await createBranchWorktree(parsed, ctx);
 
 				let workspaceCreated = false;
 				try {
@@ -427,13 +484,17 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 					);
 					workspaceCreated = true;
 
-					if (currentWorkspaceGroup) {
-						try {
-							const newWorkspaceRef = await run("cmux", ["current-workspace", "--window", windowRef], repoRoot);
+					// Record the created workspace so /branch-done knows it may close it
+					try {
+						const newWorkspaceRef = await run("cmux", ["current-workspace", "--window", windowRef], repoRoot);
+						const worktreeGitDir = await run("git", ["rev-parse", "--absolute-git-dir"], worktreePath);
+						writeFileSync(join(worktreeGitDir, CMUX_MARKER_FILE), `${newWorkspaceRef}\n`);
+
+						if (currentWorkspaceGroup) {
 							await run("cmux", ["workspace-group", "add", "--group", currentWorkspaceGroup, "--workspace", newWorkspaceRef], repoRoot);
-						} catch (error) {
-							ctx.ui.notify(`Failed to add workspace to cmux group: ${error instanceof Error ? error.message : String(error)}`, "warning");
 						}
+					} catch (error) {
+						ctx.ui.notify(`Post-workspace setup failed (branch-done won't auto-close this workspace): ${error instanceof Error ? error.message : String(error)}`, "warning");
 					}
 				} catch (cmuxError) {
 					await run("git", ["worktree", "remove", "--force", worktreePath], repoRoot).catch(() => {});
