@@ -130,7 +130,7 @@ function getGitExtra(cwd: string): GitExtra {
 
 const BAR_WIDTH = 10;
 
-// Theme token gradient — each = colored by its 10% band
+// Theme token gradient — each cell colored by its 10% band
 // Within each band, later slots use bold for intensification
 const BAR_SLOTS: { color: string; bold: boolean }[] = [
   { color: "success", bold: false },  //  0-10%
@@ -145,32 +145,137 @@ const BAR_SLOTS: { color: string; bold: boolean }[] = [
   { color: "error",   bold: true },   // 90-100%
 ];
 
+// Left-to-right partial fills: index = eighths filled (1-7), full cell = █.
+const PARTIAL_BLOCKS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
+
 function renderContextBar(
   percent: number | null,
   theme: { fg: (color: string, text: string) => string; bold: (text: string) => string },
 ): string {
-  const pct = percent ?? 0;
-  const filled = Math.round((pct / 100) * BAR_WIDTH);
-  const empty = BAR_WIDTH - filled;
+  const pct = Math.min(100, Math.max(0, percent ?? 0));
+  // Fill in eighth-cell steps for smooth progress.
+  const eighths = Math.round((pct / 100) * BAR_WIDTH * 8);
+  const full = Math.floor(eighths / 8);
+  const rem = eighths % 8;
 
   let filledStr = "";
-  for (let i = 0; i < filled; i++) {
+  for (let i = 0; i < full; i++) {
     const slot = BAR_SLOTS[i];
-    const ch = slot.bold ? theme.bold("=") : "=";
+    const ch = slot.bold ? theme.bold("█") : "█";
+    filledStr += theme.fg(slot.color, ch);
+  }
+  if (rem > 0 && full < BAR_WIDTH) {
+    const slot = BAR_SLOTS[full];
+    const ch = slot.bold ? theme.bold(PARTIAL_BLOCKS[rem]) : PARTIAL_BLOCKS[rem];
     filledStr += theme.fg(slot.color, ch);
   }
 
-  const bar =
-    theme.fg("dim", "[") +
-    filledStr +
-    " ".repeat(empty) +
-    theme.fg("dim", "]");
+  const used = full + (rem > 0 ? 1 : 0);
+  const empty = BAR_WIDTH - used;
 
-  const label = percent !== null ? `${Math.round(pct)}%` : "?";
-  return bar + theme.fg("dim", label);
+  // Shaded track instead of [] brackets — same block-glyph family as █/▎,
+  // so the bar has a uniform height.
+  return filledStr + theme.fg("dim", "░".repeat(Math.max(0, empty)));
 }
 
-// ── Extension ────────────────────────────────────────────────────────
+// ── Responsive layout (pure, exported for tests) ───────────────────
+
+/** Pre-styled footer segments. Each string may contain ANSI codes. */
+export interface FooterSegments {
+  /** Repo name (no separator). Empty string when unknown. */
+  repo: string;
+  /** Separator between repo and branch (e.g. "|" or " ⑂ "). */
+  sep: string;
+  /** Branch name incl. dirty/ahead/behind marks. Empty when unknown. */
+  branch: string;
+  /** Context bar visual, e.g. "[====      ]". */
+  bar: string;
+  /** Context percent label, e.g. "62%". */
+  pct: string;
+  /** Cost, e.g. "$0.12". */
+  cost: string;
+  /** Model id incl. thinking glyph / MCP suffix. */
+  model: string;
+}
+
+export interface FooterShow {
+  bar: boolean;
+  repo: boolean;
+  cost: boolean;
+  branch: boolean;
+  model: boolean;
+  pct: boolean;
+}
+
+/**
+ * Hide order when the terminal is too narrow:
+ * bar visual → repo name → cost → branch → model → context %
+ */
+export const FOOTER_DROP_ORDER: (keyof FooterShow)[] = [
+  "bar",
+  "repo",
+  "cost",
+  "branch",
+  "model",
+  "pct",
+];
+
+/** Assemble line 1 from visible segments; left/right justified to width. */
+export function composeFooterLine(
+  seg: FooterSegments,
+  show: FooterShow,
+  width: number,
+): string {
+  let left = "";
+  if (show.repo && seg.repo) {
+    left += seg.repo;
+    if (show.branch && seg.branch) left += seg.sep;
+  }
+  if (show.branch) left += seg.branch;
+
+  const rightParts: string[] = [];
+  let right = "";
+  if (show.pct) right += seg.pct;
+  if (show.bar) right += seg.bar;
+  if (show.cost) rightParts.push(seg.cost);
+  if (show.model) rightParts.push(seg.model);
+  if (rightParts.length > 0) {
+    right += (right ? " " : "") + rightParts.join(" ");
+  }
+
+  if (!right) return left;
+  if (!left) {
+    // Keep the right block right-aligned even without a left side.
+    const pad = width - visibleWidth(right);
+    return " ".repeat(Math.max(0, pad)) + right;
+  }
+  const gap = width - visibleWidth(left) - visibleWidth(right);
+  return left + " ".repeat(Math.max(1, gap)) + right;
+}
+
+/**
+ * Compose line 1, hiding segments in FOOTER_DROP_ORDER until it fits width.
+ * May still overflow after all drops (caller should truncate).
+ */
+export function fitFooterLine(seg: FooterSegments, width: number): string {
+  const show: FooterShow = {
+    bar: true,
+    repo: true,
+    cost: true,
+    branch: true,
+    model: true,
+    pct: true,
+  };
+  let line = composeFooterLine(seg, show, width);
+  for (const key of FOOTER_DROP_ORDER) {
+    if (visibleWidth(line) <= width) break;
+    show[key] = false;
+    line = composeFooterLine(seg, show, width);
+  }
+  return line;
+}
+
+// ── Extension ──────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
   let gitExtra: GitExtra = { repo: null, branch: null, isWorktree: false, dirty: false, ahead: 0, behind: 0 };
@@ -217,30 +322,25 @@ export default function (pi: ExtensionAPI) {
           // Line 1:  model · thinking [==========]62%    repo(branch)
           // ═══════════════════════════════════════════════════════
 
-          // Left: repo|branch *⇣⇡
+          // ── Segments ──
           // Resolve branch from git directly so worktrees don't inherit the main checkout's branch.
           gitExtra = refreshGitExtra(ctx);
           const rawBranch = gitExtra.branch ?? footerData.getGitBranch();
           const branch = rawBranch ? shortenBranch(rawBranch) : rawBranch;
           const repo = gitExtra.repo;
           const wt = gitExtra.isWorktree;
-          let left = "";
-          if (repo && branch) {
-            let marks = "";
-            if (gitExtra.dirty) marks += "*";
-            if (gitExtra.behind) marks += `⇣${gitExtra.behind > 1 ? gitExtra.behind : ""}`;
-            if (gitExtra.ahead) marks += `⇡${gitExtra.ahead > 1 ? gitExtra.ahead : ""}`;
-            const suffix = marks ? " " + marks : "";
-            const sep = wt ? " ⑂ " : "|";
-            left =
-              theme.fg("dim", `${repo}${sep}`) +
-              theme.fg("accent", theme.bold(branch)) +
-              theme.fg("dim", suffix);
-          } else if (repo) {
-            left = theme.fg("dim", repo);
-          }
 
-          // Right: context bar + cost + model · thinking · MCP
+          let marks = "";
+          if (gitExtra.dirty) marks += "*";
+          if (gitExtra.behind) marks += `⇣${gitExtra.behind > 1 ? gitExtra.behind : ""}`;
+          if (gitExtra.ahead) marks += `⇡${gitExtra.ahead > 1 ? gitExtra.ahead : ""}`;
+          const marksSuffix = marks ? " " + marks : "";
+          const sep = wt ? " ⑂ " : "|";
+
+          const branchSeg = branch
+            ? theme.fg("accent", theme.bold(branch)) + theme.fg("dim", marksSuffix)
+            : "";
+
           const modelId = shortenModelId(ctx.model?.id ?? "no-model");
           const thinking = pi.getThinkingLevel();
           const hasReasoning = (ctx.model as any)?.reasoning;
@@ -250,7 +350,8 @@ export default function (pi: ExtensionAPI) {
               : ` ${thinkingGlyph(thinking)}`
             : "";
           const costStr = formatCost(totalCost);
-          const bar = renderContextBar(pct, theme);
+          const barSeg = renderContextBar(pct, theme);
+          const pctSeg = theme.fg("dim", pct !== null ? `${Math.round(pct)}%` : "?");
 
           // MCP status: pull out of extension statuses, show inline only when used.
           const statuses = footerData.getExtensionStatuses();
@@ -263,13 +364,17 @@ export default function (pi: ExtensionAPI) {
             }
           }
 
-          const right =
-            bar + " " + theme.fg("dim", `${costStr} ${modelId}${thinkSuffix}${mcpSuffix}`);
-
-          const lw = visibleWidth(left);
-          const rw = visibleWidth(right);
-          const gap = width - lw - rw;
-          const line1 = left + " ".repeat(Math.max(1, gap)) + right;
+          // ── Responsive assembly ──
+          const segments: FooterSegments = {
+            repo: repo ? theme.fg("dim", repo) : "",
+            sep: theme.fg("dim", sep),
+            branch: branchSeg,
+            bar: barSeg,
+            pct: pctSeg,
+            cost: theme.fg("dim", costStr),
+            model: theme.fg("dim", `${modelId}${thinkSuffix}${mcpSuffix}`),
+          };
+          const line1 = fitFooterLine(segments, width);
 
           const lines = [truncateToWidth(line1, width)];
 

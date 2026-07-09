@@ -3,8 +3,11 @@
   "version": "1.0.0",
   "description": "Personal pi extensions, skills, prompts, and themes",
   "keywords": ["pi-package"],
+  "scripts": {
+    "test": "NODE_PATH=$(npm root -g)/@earendil-works/pi-coding-agent/node_modules npx -y tsx --test extensions/*.test.ts"
+  },
   "pi": {
-    "extensions": ["./extensions"],
+    "extensions": ["./extensions", "!extensions/*.test.ts"],
     "skills": ["./skills"],
     "prompts": ["./prompts"],
     "themes": ["./themes"]
