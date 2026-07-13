@@ -7,7 +7,7 @@
  * Commands:
  *   /branch <name> [--base ref] [--worktree-dir dir] — create branch + worktree only
  *   /branch-and-split <name> [--base ref] [--worktree-dir dir] [--command cmd] — also open cmux workspace
- *   /branch-done [--no-retro] [--keep-branch] — run retro, clean up worktree (& workspace if /branch-and-split was used), exit
+ *   /branch-done [--no-retro] [--keep-branch] — run retro, verify the branch PR is merged, clean up worktree (& workspace if /branch-and-split was used), exit
  *
  * Env: PI_BRANCH_BASE, PI_BRANCH_WORKTREE_DIR, PI_BRANCH_AGENT_COMMAND
  */
@@ -186,6 +186,14 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 		retroStarted: boolean;
 	};
 
+	type BranchPrStatus = {
+		state: string;
+		mergedAt: string | null;
+		url: string;
+		number: number;
+		title: string;
+	};
+
 	let pendingBranchDoneCleanup: BranchDoneCleanup | null = null;
 
 	async function detectWorktreeInfo(cwd: string): Promise<WorktreeInfo | null> {
@@ -232,6 +240,23 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 		const date = now.toISOString().slice(0, 10);
 		const slug = sanitizeBranchForPath(branch).slice(0, 40);
 		return join(homedir(), ".agents", "retros", `${date}-${slug}.md`);
+	}
+
+	async function findBranchPrStatus(info: WorktreeInfo): Promise<BranchPrStatus | null> {
+		const output = await run(
+			"gh",
+			["pr", "view", info.branch, "--json", "state,mergedAt,url,number,title"],
+			info.mainRepoRoot,
+			30_000,
+		).catch(() => null);
+		if (!output) return null;
+		return JSON.parse(output) as BranchPrStatus;
+	}
+
+	function formatPrStatus(pr: BranchPrStatus | null): string {
+		if (!pr) return "PR: not found";
+		const merged = pr.mergedAt ? `merged at ${pr.mergedAt}` : pr.state.toLowerCase();
+		return `PR: #${pr.number} ${merged}\n${pr.url}`;
 	}
 
 	async function cleanupBranchDone(ctx: ExtensionContext, request: BranchDoneCleanup): Promise<void> {
@@ -295,7 +320,7 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("branch-done", {
-		description: "Run session retro, clean up worktree & cmux workspace, and exit",
+		description: "Run session retro, verify branch PR is merged, clean up worktree & cmux workspace, and exit",
 		getArgumentCompletions: () => null,
 		handler: async (rawArgs, ctx) => {
 			const flags = rawArgs.trim().split(/\s+/).filter(Boolean);
@@ -315,10 +340,27 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 			}
 
 			const branchLabel = info?.branch ?? "session";
+			const prStatus = info ? await findBranchPrStatus(info) : null;
+			const prIsMerged = prStatus?.state === "MERGED" || Boolean(prStatus?.mergedAt);
+
+			if (info && !prIsMerged) {
+				const proceedUnmerged = await ctx.ui.confirm(
+					"Branch PR is not merged — delete anyway?",
+					[
+						`Branch: ${info.branch}`,
+						`Worktree: ${info.worktreePath}`,
+						formatPrStatus(prStatus),
+						"",
+						"Normally /branch-done should run after the branch PR has merged.",
+						"Continue cleanup anyway? This can remove the worktree and delete the local branch.",
+					].join("\n"),
+				);
+				if (!proceedUnmerged) return;
+			}
 
 			// Confirm before proceeding
 			const summary = info
-				? `Branch: ${info.branch}\nWorktree: ${info.worktreePath}${keepBranch ? "\n(keeping branch)" : ""}`
+				? `Branch: ${info.branch}\nWorktree: ${info.worktreePath}\n${formatPrStatus(prStatus)}${keepBranch ? "\n(keeping branch)" : ""}`
 				: "Not in a worktree — will run retro only.";
 			const confirmed = await ctx.ui.confirm(
 				"Done — clean up and exit?",

@@ -20,7 +20,7 @@ Creates a git worktree from a base branch and opens it in a sibling [cmux](https
 /worktree-status
 ```
 
-Auto-detects `origin/main` or `origin/master` as the base. `/branch-done` runs a session retro (written to `~/.agents/retros/`), then removes the worktree, deletes the branch, and closes the cmux workspace once the retro finishes.
+Auto-detects `origin/main` or `origin/master` as the base. `/branch-done` checks the branch PR status with `gh pr view`; if no PR is found or the PR is not merged, it asks before cleanup. After confirmation it runs a session retro (written to `~/.agents/retros/`), then removes the worktree, deletes the branch (unless `--keep-branch`), and closes the cmux workspace once the retro finishes.
 
 <details>
 <summary>Env vars</summary>
