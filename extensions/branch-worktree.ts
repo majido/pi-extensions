@@ -15,8 +15,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 const DEFAULT_WORKTREE_DIR = process.env.PI_BRANCH_WORKTREE_DIR ?? ".worktree";
 const DEFAULT_AGENT_COMMAND = process.env.PI_BRANCH_AGENT_COMMAND ?? "exec pi";
@@ -137,26 +138,25 @@ async function detectDefaultBase(
 	throw new Error("Could not detect default base branch. Neither origin/main nor origin/master found. Use --base to specify.");
 }
 
-const RETRO_PROMPT = `Produce a structured retrospective of this session. Be direct, skip praise, cite evidence.
+// The retro prompt itself lives in the `session-retro` skill so it can be reused
+// outside /branch-done and edited in one place. Resolve it relative to this
+// extension file (extensions/ and skills/ are siblings under the repo root).
+const SESSION_RETRO_SKILL_PATH = resolve(
+	dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"skills",
+	"session-retro",
+	"SKILL.md",
+);
 
-For every finding, quote the specific turn (\`> "..."\`) and give a concrete next-time action.
-
-**Dimensions** (omit any with no issues):
-
-- **Skill & tool selection** — missed skill loads, wrong tool, sequential calls that should have been parallel, unnecessary bash vs. dedicated tools.
-- **Assistant performance** — wrong assumptions, hallucinated paths/APIs, premature edits, insufficient verification, over-engineering.
-- **Prompt quality** — ambiguity, missing context, missing file refs, missing constraints.
-- **Task scoping** — chunks too large/vague, missed batching opportunities.
-- **Back-and-forth** — avoidable clarification loops, corrections that signal ambiguous original ask.
-- **Verification** — missing test/build steps, re-do cycles from weak review.
-- **Agent sandbox or permission friction** — tasks or tool calls blocked by lacking permission, API calls that failed due to insufficient permissions, and steps taken (or missed) to resolve them.
-- **Rules to add/update** — recurring patterns worth codifying in project or global AGENTS.md.
-
-**End with:**
-
-- **Top 3 wins for next session** — ranked, highest-leverage first.
-- **Persist** — write the retro content to the file path provided in the tool call.
-`;
+function buildRetroMessage(retroPath: string): string {
+	return [
+		`Read the session-retro skill at ${SESSION_RETRO_SKILL_PATH} and follow it to`,
+		"produce a retrospective of this session.",
+		"",
+		`Write the retro to: ${retroPath}`,
+	].join("\n");
+}
 
 export default function branchWorktreeExtension(pi: ExtensionAPI) {
 	async function run(command: string, args: string[], cwd: string, timeout = 60_000): Promise<string> {
@@ -377,7 +377,7 @@ export default function branchWorktreeExtension(pi: ExtensionAPI) {
 			const retroDir = resolve(retroPath, "..");
 			await mkdir(retroDir, { recursive: true });
 
-			const retroMessage = `${RETRO_PROMPT}\nWrite the retro to: ${retroPath}`;
+			const retroMessage = buildRetroMessage(retroPath);
 			pendingBranchDoneCleanup = { info, keepBranch, retroMessage, retroStarted: false };
 
 			try {
