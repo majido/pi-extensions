@@ -4,7 +4,7 @@
  * Registers Google Cloud Vertex AI as a provider for Claude models.
  * Uses the Anthropic Vertex SDK for authentication and streaming.
  *
- * Env: GOOGLE_CLOUD_PROJECT (required), GOOGLE_CLOUD_VERTEX_LOCATION (default: us-east5)
+ * Env: PI_USE_VERTEX_FOR_CLAUDE (required to enable), GOOGLE_CLOUD_PROJECT (required), GOOGLE_CLOUD_VERTEX_LOCATION (default: us-east5)
  */
 
 import { AnthropicVertex } from "@anthropic-ai/vertex-sdk";
@@ -21,6 +21,10 @@ const MODEL_REGION_OVERRIDES: Record<string, string> = {
 };
 
 export default function (pi: ExtensionAPI) {
+	if (!process.env.PI_USE_VERTEX_FOR_CLAUDE) {
+		return;
+	}
+
 	pi.registerProvider("vertex-claude", {
 		name: "Vertex Claude",
 		baseUrl: "https://dummy",
