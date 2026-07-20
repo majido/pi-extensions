@@ -47,17 +47,14 @@ exactly this YAML frontmatter — no other keys:
 ```yaml
 ---
 last_verified: 2026-02-14        # date the content was last checked against the code
-verified_against: abc1234        # short sha; anchor for the mechanical staleness audit
-sources:                         # folders/files this page documents (repo-root-relative)
-  - src/backend/storage/
-  - src/backend/models.py
+verified_against: abc1234        # short sha at that check; makes "how stale?" answerable
 ---
 ```
 
-`sources` is the canonical folder↔page mapping: the refresh audit diffs against it, the
-scoped rules in Phase 4 are derived from it, and Phase 6 checks it. Don't add `title`
-(the H1 has it), `summary` (lives in `index.md`; duplication rots), or owner/status/tags
-(no consumer).
+Nothing else. Don't add `title` (the H1 has it), `summary` (lives in `index.md`;
+duplication rots), `sources` (the folder↔page mapping lives in the scoped rules'
+`paths` globs — one canonical location, and the rules are the copy that gets exercised),
+or owner/status/tags (no consumer).
 
 ## Workflow
 
@@ -65,21 +62,11 @@ Commit at phase boundaries: after Phase 2 (skeleton), after Phase 3 (generation 
 execution), after Phase 5 (review fixes). This keeps the review diff clean and makes the
 fan-out recoverable if a writer fails.
 
-### Mode: bootstrap vs refresh
-
-If `docs/wiki/index.md` already exists, **do not regenerate** — run a staleness audit:
-
-1. For each page, read `verified_against` and `sources` from its frontmatter.
-2. `git diff --stat <verified_against>..HEAD -- <sources...>` — no diff ⇒ page is
-   current; just bump nothing and skip it.
-3. For drifted pages, read the actual diff and the page; surgically update only the
-   sections the diff invalidates; refresh `last_verified` and `verified_against`.
-4. Check coverage: new top-level subsystems with no page ⇒ propose additions (confirm
-   with the user before generating, as in Phase 1).
-5. Re-run Phase 6.
-
-The bootstrap phases below apply only when there is no wiki, or the user explicitly asks
-for a rebuild.
+If `docs/wiki/index.md` already exists, **do not re-bootstrap**. Maintenance happens
+in-PR via the rules — that's the design. If drift has accumulated anyway (non-Claude
+sessions, direct commits) and the user asks for a refresh: diff each page's
+`verified_against`..HEAD scoped to its rule's `paths`, surgically update drifted pages,
+and re-run Phase 6. Nothing more.
 
 ### Phase 1 — Scan and propose
 
@@ -88,7 +75,7 @@ for a rebuild.
 2. Propose a page list (typically 6–10 pages) cut along the repo's real seams, e.g.:
    `architecture`, `<domain-core>`, `frontend`, `storage`, `deployment`, `testing`,
    plus repo-specific pages. Every page must map to concrete source folders — if you
-   can't name the folders a page covers (its `sources`), the page is wrong. In monorepos,
+   can't name the folders a page covers, the page is wrong. In monorepos,
    cut per-concern across packages when they share architecture; cut per-package only
    when packages are genuinely independent.
 3. **Triage existing docs.** Inventory every doc (root *.md, docs/, scattered READMEs)
@@ -141,21 +128,21 @@ contract changes, update all three.
    docs, code comments).
 
 **Page quality bar** (put this verbatim in each subagent task, plus the frontmatter
-spec from above with the page's actual `sources`):
+spec from above):
 - < 200 lines; link out rather than inline detail
 - cite real file paths for every major claim
 - cross-link sibling wiki pages where topics touch
 - describe what IS, not history or future plans
-- start with the required YAML frontmatter (`last_verified`, `verified_against`, `sources`)
+- start with the required YAML frontmatter (`last_verified`, `verified_against`)
 
 ### Phase 4 — Install rules
 
 1. Create `.claude/rules/wiki.md` (unscoped, always loaded) from
    [templates/rule-wiki.md](templates/rule-wiki.md).
 2. Create one path-scoped rule per page from
-   [templates/rule-scoped.md](templates/rule-scoped.md), deriving the `paths` globs from
-   the page's `sources` frontmatter. Keep each rule ≤ 6 lines:
-   a pointer plus the update obligation. **All content lives in the wiki** — facts
+   [templates/rule-scoped.md](templates/rule-scoped.md). The rule's `paths` globs are
+   the **canonical folder↔page mapping** — they live here, next to what triggers them,
+   not in the page. Keep each rule ≤ 6 lines: a pointer plus the update obligation. **All content lives in the wiki** — facts
    duplicated into rules go stale.
 3. If the repo uses Cline, mirror the unscoped rule into `.clinerules/` (path scoping is
    Claude Code-only; other agents rely on the index).
@@ -181,9 +168,10 @@ No LLM judgment needed here — these are checkable facts. Run them, don't eyeba
 
 - Every wiki page is linked from `index.md` (the discoverability invariant: a doc not
   reachable from an entry point is invisible).
-- Every page has valid frontmatter, and every `sources` entry exists.
+- Every page has the required frontmatter.
 - Every `paths` glob in `.claude/rules/` matches at least one tracked file
-  (`git ls-files '<glob>' | head -1` per glob).
+  (`git ls-files '<glob>' | head -1` per glob) — the globs are the folder↔page mapping,
+  so a dead glob means an orphaned page.
 - Every file path cited in wiki pages exists.
 - README and AGENTS.md links resolve.
 - No dangling references to deleted docs anywhere in the repo (`grep` each removed filename).
@@ -193,10 +181,6 @@ No LLM judgment needed here — these are checkable facts. Run them, don't eyeba
 # every page linked from index.md
 for f in docs/wiki/*.md; do b=$(basename "$f"); [ "$b" = index.md ] && continue;
   grep -q "$b" docs/wiki/index.md || echo "UNLINKED: $f"; done
-
-# frontmatter sources exist
-grep -rhA20 '^sources:' docs/wiki/*.md | grep -oE '^\s*-\s+\S+' | awk '{print $2}' |
-  sort -u | while read -r p; do [ -e "$p" ] || echo "BAD SOURCE: $p"; done
 
 # backticked paths cited in pages exist (tune the pattern to the repo)
 grep -rhoE '`[^` ]+/[^` ]*`' docs/wiki/ | tr -d '\`' | sort -u |
@@ -213,8 +197,8 @@ Future sessions must, before finishing a change:
    internal refactors with no architectural or interface impact ⇒ no wiki update. Say so
    and move on; doc churn is a failure mode too.
 3. **Surgical edits only** — update the specific stale sections; never regenerate a page;
-   match existing style; refresh `last_verified` and `verified_against` in the frontmatter
-   (and `sources` if the mapping changed).
+   match existing style; refresh `last_verified` and `verified_against` in the frontmatter.
+   If the change moved/renamed mapped folders, update the scoped rule's `paths` too.
 4. **Discoverability invariant** — a new wiki page must be linked from `index.md` in the
    same commit.
 5. Wiki updates ship **in the same PR** as the code change.
