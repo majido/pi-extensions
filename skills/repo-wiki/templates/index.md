@@ -13,6 +13,6 @@ Related (not wiki): design docs in `docs/`, plans in `docs/plans/`.
 ## Maintenance
 
 If your change invalidates a page, update the affected sections (surgically — don't
-regenerate) in the same PR, and refresh its `Last verified` footer. New pages must be
-added to the table above in the same commit. Cosmetic/test-only/pure-refactor changes
-need no update.
+regenerate) in the same PR, and refresh its `last_verified` / `verified_against`
+frontmatter. New pages must be added to the table above in the same commit.
+Cosmetic/test-only/pure-refactor changes need no update.

@@ -1,6 +1,6 @@
 ---
 name: repo-wiki
-description: "Bootstrap and maintain an llm-wiki style docs/wiki/ for a repository: scan the repo, fan out subagents for one-time page generation, link the wiki from README/AGENTS.md, and install path-scoped .claude/rules so future agent sessions keep the docs updated. Use when asked to 'bootstrap a repo wiki', 'generate repo documentation', 'set up docs/wiki', 'create an llm wiki', or 'auto-generate docs for this repo'."
+description: "Bootstrap and maintain an llm-wiki style docs/wiki/ for a repository: scan the repo, fan out subagents for one-time page generation, link the wiki from README/AGENTS.md, and install path-scoped .claude/rules so future agent sessions keep the docs updated. Use when asked to 'bootstrap a repo wiki', 'generate repo documentation', 'set up docs/wiki', 'create an llm wiki', 'auto-generate docs for this repo', 'refresh the wiki', 'audit the wiki', or when told the wiki is stale."
 ---
 
 # Repo Wiki
@@ -39,7 +39,47 @@ Match model strength to judgment demand, not uniformly:
 | Phase 3 synthesis pass | strongest (parent) | reconciling overlap/contradictions across pages needs judgment |
 | Phase 5 review | strongest, **fresh context** | must not inherit the generator's assumptions; subtle inaccuracy detection |
 
+## Page frontmatter
+
+Every wiki page (except `index.md`, which is the map and covers nothing) starts with
+exactly this YAML frontmatter — no other keys:
+
+```yaml
+---
+last_verified: 2026-02-14        # date the content was last checked against the code
+verified_against: abc1234        # short sha; anchor for the mechanical staleness audit
+sources:                         # folders/files this page documents (repo-root-relative)
+  - src/backend/storage/
+  - src/backend/models.py
+---
+```
+
+`sources` is the canonical folder↔page mapping: the refresh audit diffs against it, the
+scoped rules in Phase 4 are derived from it, and Phase 6 checks it. Don't add `title`
+(the H1 has it), `summary` (lives in `index.md`; duplication rots), or owner/status/tags
+(no consumer).
+
 ## Workflow
+
+Commit at phase boundaries: after Phase 2 (skeleton), after Phase 3 (generation + triage
+execution), after Phase 5 (review fixes). This keeps the review diff clean and makes the
+fan-out recoverable if a writer fails.
+
+### Mode: bootstrap vs refresh
+
+If `docs/wiki/index.md` already exists, **do not regenerate** — run a staleness audit:
+
+1. For each page, read `verified_against` and `sources` from its frontmatter.
+2. `git diff --stat <verified_against>..HEAD -- <sources...>` — no diff ⇒ page is
+   current; just bump nothing and skip it.
+3. For drifted pages, read the actual diff and the page; surgically update only the
+   sections the diff invalidates; refresh `last_verified` and `verified_against`.
+4. Check coverage: new top-level subsystems with no page ⇒ propose additions (confirm
+   with the user before generating, as in Phase 1).
+5. Re-run Phase 6.
+
+The bootstrap phases below apply only when there is no wiki, or the user explicitly asks
+for a rebuild.
 
 ### Phase 1 — Scan and propose
 
@@ -48,7 +88,9 @@ Match model strength to judgment demand, not uniformly:
 2. Propose a page list (typically 6–10 pages) cut along the repo's real seams, e.g.:
    `architecture`, `<domain-core>`, `frontend`, `storage`, `deployment`, `testing`,
    plus repo-specific pages. Every page must map to concrete source folders — if you
-   can't name the folders a page covers, the page is wrong.
+   can't name the folders a page covers (its `sources`), the page is wrong. In monorepos,
+   cut per-concern across packages when they share architecture; cut per-package only
+   when packages are genuinely independent.
 3. **Triage existing docs.** Inventory every doc (root *.md, docs/, scattered READMEs)
    and assign each a disposition:
 
@@ -70,12 +112,22 @@ Match model strength to judgment demand, not uniformly:
    page + the reader instruction.
 2. Add a Documentation section to README.md (one or two lines linking the index).
 3. Add the agent contract to AGENTS.md (and CLAUDE.md if the repo has one) using
-   [templates/agents-md-snippet.md](templates/agents-md-snippet.md).
+   [templates/agents-md-snippet.md](templates/agents-md-snippet.md). If README or
+   AGENTS.md doesn't exist, create a minimal one — the wiki must be reachable from
+   both entry points.
+
+Note: the maintenance contract is deliberately restated in three surfaces (AGENTS.md
+snippet, `index.md` Maintenance section, `.claude/rules/wiki.md`) because different
+agents read different ones. Keep the three restatements semantically identical; if the
+contract changes, update all three.
 
 ### Phase 3 — One-time generation (subagent fan-out)
 
-1. Fan out one subagent per page (parallel). Each task gets:
-   - the assigned page path as its `output` (distinct files, so parallel writers don't collide)
+1. Fan out one subagent per page (parallel — e.g. pi-subagents PARALLEL mode, one task
+   per page). Each task gets:
+   - the assigned page path as its `output` (distinct files, so parallel writers don't
+     collide). This is the one case where subagent output goes **in-repo**, not
+     `docs/scratchpad/` — the pages *are* the deliverable.
    - the page's scope: which folders/files it covers, which sibling pages exist (so it can
      defer instead of overlap), links to existing docs it should reference
    - any absorb-listed docs for its area, with the instruction: *old docs are leads, not
@@ -88,19 +140,21 @@ Match model strength to judgment demand, not uniformly:
    banners, and fix every inbound link (grep for each removed filename — README, other
    docs, code comments).
 
-**Page quality bar** (put this verbatim in each subagent task):
+**Page quality bar** (put this verbatim in each subagent task, plus the frontmatter
+spec from above with the page's actual `sources`):
 - < 200 lines; link out rather than inline detail
 - cite real file paths for every major claim
 - cross-link sibling wiki pages where topics touch
 - describe what IS, not history or future plans
-- end with footer: `_Last verified: <YYYY-MM-DD> against <short-sha>_`
+- start with the required YAML frontmatter (`last_verified`, `verified_against`, `sources`)
 
 ### Phase 4 — Install rules
 
 1. Create `.claude/rules/wiki.md` (unscoped, always loaded) from
    [templates/rule-wiki.md](templates/rule-wiki.md).
-2. Create one path-scoped rule per folder↔page mapping from
-   [templates/rule-scoped.md](templates/rule-scoped.md). Keep each rule ≤ 6 lines:
+2. Create one path-scoped rule per page from
+   [templates/rule-scoped.md](templates/rule-scoped.md), deriving the `paths` globs from
+   the page's `sources` frontmatter. Keep each rule ≤ 6 lines:
    a pointer plus the update obligation. **All content lives in the wiki** — facts
    duplicated into rules go stale.
 3. If the repo uses Cline, mirror the unscoped rule into `.clinerules/` (path scoping is
@@ -123,15 +177,31 @@ Match model strength to judgment demand, not uniformly:
 
 ### Phase 6 — Verify (mechanical)
 
-No LLM judgment needed here — these are checkable facts:
+No LLM judgment needed here — these are checkable facts. Run them, don't eyeball them:
 
 - Every wiki page is linked from `index.md` (the discoverability invariant: a doc not
   reachable from an entry point is invisible).
-- Every `paths` glob in `.claude/rules/` matches at least one real file.
+- Every page has valid frontmatter, and every `sources` entry exists.
+- Every `paths` glob in `.claude/rules/` matches at least one tracked file
+  (`git ls-files '<glob>' | head -1` per glob).
 - Every file path cited in wiki pages exists.
 - README and AGENTS.md links resolve.
 - No dangling references to deleted docs anywhere in the repo (`grep` each removed filename).
 - Every historical-marked doc carries its banner and points to a real wiki page.
+
+```bash
+# every page linked from index.md
+for f in docs/wiki/*.md; do b=$(basename "$f"); [ "$b" = index.md ] && continue;
+  grep -q "$b" docs/wiki/index.md || echo "UNLINKED: $f"; done
+
+# frontmatter sources exist
+grep -rhA20 '^sources:' docs/wiki/*.md | grep -oE '^\s*-\s+\S+' | awk '{print $2}' |
+  sort -u | while read -r p; do [ -e "$p" ] || echo "BAD SOURCE: $p"; done
+
+# backticked paths cited in pages exist (tune the pattern to the repo)
+grep -rhoE '`[^` ]+/[^` ]*`' docs/wiki/ | tr -d '\`' | sort -u |
+  while read -r p; do [ -e "$p" ] || echo "MISSING: $p"; done
+```
 
 ## The maintenance contract (encoded in rules + AGENTS.md)
 
@@ -143,7 +213,8 @@ Future sessions must, before finishing a change:
    internal refactors with no architectural or interface impact ⇒ no wiki update. Say so
    and move on; doc churn is a failure mode too.
 3. **Surgical edits only** — update the specific stale sections; never regenerate a page;
-   match existing style; refresh the `Last verified` footer.
+   match existing style; refresh `last_verified` and `verified_against` in the frontmatter
+   (and `sources` if the mapping changed).
 4. **Discoverability invariant** — a new wiki page must be linked from `index.md` in the
    same commit.
 5. Wiki updates ship **in the same PR** as the code change.
