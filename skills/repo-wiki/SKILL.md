@@ -28,6 +28,17 @@ data flow, conventions, how to extend it — for human and agent readers. It is 
 No CI backstop. Maintenance is enforced in-session (rules) and at review time (wiki diffs
 appear in the same PR as the code change).
 
+## Model tiers
+
+Match model strength to judgment demand, not uniformly:
+
+| Task | Tier | Why |
+|------|------|-----|
+| Phase 1 scan + page-list design | strongest available (parent) | choosing the repo's seams is where quality is won or lost |
+| Phase 3 page writers (fan-out) | mid-tier (sonnet-class) | bounded scope, template-driven read+summarize; parallel, so cost scales with page count |
+| Phase 3 synthesis pass | strongest (parent) | reconciling overlap/contradictions across pages needs judgment |
+| Phase 5 review | strongest, **fresh context** | must not inherit the generator's assumptions; subtle inaccuracy detection |
+
 ## Workflow
 
 ### Phase 1 — Scan and propose
@@ -77,7 +88,24 @@ appear in the same PR as the code change).
 3. If the repo uses Cline, mirror the unscoped rule into `.clinerules/` (path scoping is
    Claude Code-only; other agents rely on the index).
 
-### Phase 5 — Verify
+### Phase 5 — Review (fresh context, read-only)
+
+1. Spawn a fresh-context, read-only reviewer subagent (strongest tier). It must **verify
+   claims against the code**, not just polish prose. Checklist for the reviewer:
+   - accuracy: spot-check factual claims and cited paths against the actual source
+   - coverage: significant subsystems with no page, or page sections that miss the point
+   - overlap/contradiction between pages
+   - index fidelity: summaries in `index.md` match page content
+   - scope violations: history/changelog/plan content that doesn't belong in a wiki
+2. Reviewer writes findings to a scratch file (e.g. `docs/scratchpad/wiki-review.md`);
+   it does not edit the wiki.
+3. **Parent applies fixes as sole writer**, exercising judgment on which findings to accept.
+4. If review found major structural problems (wrong page cuts), fix and re-review once;
+   don't loop indefinitely.
+
+### Phase 6 — Verify (mechanical)
+
+No LLM judgment needed here — these are checkable facts:
 
 - Every wiki page is linked from `index.md` (the discoverability invariant: a doc not
   reachable from an entry point is invisible).
@@ -109,6 +137,10 @@ Future sessions must, before finishing a change:
 - **Duplicating existing docs** — link to design docs/READMEs instead of restating them.
 - **Skipping the synthesis pass** — parallel subagents produce overlapping/contradictory
   pages; the parent must reconcile.
+- **Reviewer with inherited context** — a reviewer forked from the generating session
+  rubber-stamps; it must start fresh. And it stays read-only: one writer per worktree.
+- **Over-speccing models** — frontier models for page writers roughly triples fan-out cost
+  for marginal gain; spend the budget on synthesis and review instead.
 - **Wiki as changelog** — reject "we changed X to Y" phrasing; the wiki states the current truth.
 
 ## Success criteria
@@ -116,4 +148,5 @@ Future sessions must, before finishing a change:
 - A new agent session can read `index.md` + one page and correctly orient for a task in
   that area without scanning the whole repo.
 - A code change touching a mapped folder triggers the corresponding rule in Claude Code.
-- Phase 5 checks all pass.
+- The fresh-context review found no unaddressed accuracy or coverage findings.
+- Phase 6 mechanical checks all pass.
