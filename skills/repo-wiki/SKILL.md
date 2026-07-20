@@ -49,8 +49,20 @@ Match model strength to judgment demand, not uniformly:
    `architecture`, `<domain-core>`, `frontend`, `storage`, `deployment`, `testing`,
    plus repo-specific pages. Every page must map to concrete source folders — if you
    can't name the folders a page covers, the page is wrong.
-3. Note existing docs that already cover ground. Wiki pages **link** to them; never duplicate.
-4. **Stop and confirm the page list with the user before generating.**
+3. **Triage existing docs.** Inventory every doc (root *.md, docs/, scattered READMEs)
+   and assign each a disposition:
+
+   | Disposition | When | Action |
+   |---|---|---|
+   | **Absorb** | describes current state, belongs in the wiki (old architecture/overview docs) | feed to the page writer as a *lead*; delete the original after absorption |
+   | **Link** | living doc with its own job (runbooks, setup guides, API references) | wiki links to it; never duplicate |
+   | **Mark historical** | design docs, proposals, ADRs — records *decisions*, not current state | keep; prepend a `> Historical — current state: docs/wiki/<page>.md` banner |
+   | **Delete** | plainly outdated and worthless, or fully redundant after absorption | remove, after fixing inbound links |
+
+   Rules of thumb: decision records are never absorbed or deleted — the wiki states what
+   IS, they explain *why*. When unsure between absorb and mark-historical, mark historical.
+4. **Stop and confirm the page list *and* the doc-triage table with the user before
+   generating.** Deletions especially need explicit sign-off.
 
 ### Phase 2 — Skeleton and links
 
@@ -66,9 +78,15 @@ Match model strength to judgment demand, not uniformly:
    - the assigned page path as its `output` (distinct files, so parallel writers don't collide)
    - the page's scope: which folders/files it covers, which sibling pages exist (so it can
      defer instead of overlap), links to existing docs it should reference
+   - any absorb-listed docs for its area, with the instruction: *old docs are leads, not
+     truth — verify every absorbed claim against the current code before including it;
+     silently drop anything that no longer holds*
    - the quality bar (below)
 2. **Parent does a synthesis pass** — this is not optional: fix cross-links, remove overlap
    between pages, verify every cited file path exists, finalize `index.md` summaries.
+3. **Execute the triage dispositions**: delete absorbed/obsolete docs, add historical
+   banners, and fix every inbound link (grep for each removed filename — README, other
+   docs, code comments).
 
 **Page quality bar** (put this verbatim in each subagent task):
 - < 200 lines; link out rather than inline detail
@@ -112,6 +130,8 @@ No LLM judgment needed here — these are checkable facts:
 - Every `paths` glob in `.claude/rules/` matches at least one real file.
 - Every file path cited in wiki pages exists.
 - README and AGENTS.md links resolve.
+- No dangling references to deleted docs anywhere in the repo (`grep` each removed filename).
+- Every historical-marked doc carries its banner and points to a real wiki page.
 
 ## The maintenance contract (encoded in rules + AGENTS.md)
 
@@ -142,6 +162,10 @@ Future sessions must, before finishing a change:
 - **Over-speccing models** — frontier models for page writers roughly triples fan-out cost
   for marginal gain; spend the budget on synthesis and review instead.
 - **Wiki as changelog** — reject "we changed X to Y" phrasing; the wiki states the current truth.
+- **Trusting old docs** — absorbing an outdated architecture doc verbatim launders stale
+  claims into an authoritative-looking wiki; every absorbed claim gets re-verified against code.
+- **Deleting decision records** — design docs and ADRs answer "why is it this way"; the wiki
+  can't. Mark them historical instead of deleting.
 
 ## Success criteria
 
