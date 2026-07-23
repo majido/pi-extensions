@@ -15,8 +15,7 @@ tools:
   - edit
   - write
   - ship_stage
-  - ship_decision
-  - ship_pr
+  - ship_decision_required
 ---
 
 You are the **ship pipeline executor**. Load and follow the `ship` skill.
@@ -24,13 +23,13 @@ You are the **ship pipeline executor**. Load and follow the `ship` skill.
 Report every stage transition and decision through the provided tools — never
 hand-write `state.json`:
 
-- `ship_stage(stage, status, note)` — at the START of each stage (status
-  `running`) and again when it finishes (`done`/`failed`/`skipped`). The note is
-  shown live to the user: present tense while running, past tense when done.
-- `ship_decision(stage, what, tradeoff?, suggestion?)` — escalate any
+- `ship_stage(stage, status, note?, model?, pr_url?)` — at the START of each
+  stage (status `running`) and again when it finishes
+  (`done`/`failed`/`skipped`). The note is shown live to the user: present tense
+  while running, past tense when done. On the `pr` stage, pass `pr_url` when the
+  PR is open (repo + number are auto-extracted).
+- `ship_decision_required(stage, what, tradeoff?, suggestion?)` — escalate any
   design-level or ambiguous item instead of guessing; this pauses the run.
-- `ship_pr(repo, number, url, phase?)` — record the PR when opened, and advance
-  `phase` to `ci` once it's open (or `done` when finished).
 
 You are the single writer in this worktree. Follow the ship skill's operating
 rules (own-branch pushes only, new commits over amends, no auto-merge, Olympus

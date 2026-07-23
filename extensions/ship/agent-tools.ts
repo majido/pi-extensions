@@ -16,7 +16,6 @@ import {
   appendJournal,
   readActiveState,
   writeState,
-  type Phase,
   type ShipState,
   type StageStatus,
 } from "./state.ts";
@@ -25,13 +24,19 @@ function loadState(cwd: string): ShipState | undefined {
   return readActiveState(cwd);
 }
 
+/** Extract owner/repo + number from a GitHub PR URL; keeps the raw url too. */
+function parsePrUrl(url: string): { repo?: string; number?: number; url: string } {
+  const m = url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+  return m ? { repo: m[1], number: Number(m[2]), url } : { url };
+}
+
 export default function (pi: ExtensionAPI) {
   // ---- ship_stage: transition a pipeline stage --------------------------
   pi.registerTool({
     name: "ship_stage",
     label: "Ship Stage",
     description:
-      "Report a ship pipeline stage transition. Call at the START of a stage (status=running) and again when it finishes (done/failed/skipped). The note is shown to the user: present tense while running, past tense when done. Always call this instead of editing state.json by hand.",
+      "Report a ship pipeline stage transition. Call at the START of a stage (status=running) and again when it finishes (done/failed/skipped). The note is shown to the user: present tense while running, past tense when done. On the 'pr' stage, pass pr_url when the PR is open. Always call this instead of editing state.json by hand.",
     promptSnippet:
       "Report ship stage transitions via ship_stage(stage,status,note) instead of writing state.json.",
     parameters: Type.Object({
@@ -41,6 +46,12 @@ export default function (pi: ExtensionAPI) {
         Type.String({ description: "Short one-liner shown to the user" }),
       ),
       model: Type.Optional(Type.String({ description: "Model handling this stage" })),
+      pr_url: Type.Optional(
+        Type.String({
+          description:
+            "PR URL (on the 'pr' stage). repo + number are auto-extracted from it.",
+        }),
+      ),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const cwd = ctx.cwd;
@@ -60,20 +71,29 @@ export default function (pi: ExtensionAPI) {
       } else {
         stage.endedAt = now;
       }
+      if (params.pr_url) {
+        state.pr = { ...(state.pr ?? {}), ...parsePrUrl(params.pr_url) };
+      }
       writeState(state);
-      appendJournal(cwd, state.runId, `${params.stage} — ${params.status}${params.note ? `: ${params.note}` : ""}`);
-      return okText(`ship_stage: ${params.stage} → ${params.status}`);
+      appendJournal(
+        cwd,
+        state.runId,
+        `${params.stage} — ${params.status}${params.note ? `: ${params.note}` : ""}${params.pr_url ? ` (pr ${params.pr_url})` : ""}`,
+      );
+      return okText(
+        `ship_stage: ${params.stage} → ${params.status}${state.pr?.number ? ` (PR #${state.pr.number})` : ""}`,
+      );
     },
   });
 
-  // ---- ship_decision: escalate a needsDecision --------------------------
+  // ---- ship_decision_required: escalate a needsDecision -----------------
   pi.registerTool({
-    name: "ship_decision",
-    label: "Ship Decision",
+    name: "ship_decision_required",
+    label: "Ship Decision Required",
     description:
       "Escalate a design-level or ambiguous item that needs a human decision. Records it, pauses the run, and notifies the user. Use for anything not a straightforward clear win.",
     promptSnippet:
-      "Escalate architectural/ambiguous items via ship_decision instead of guessing.",
+      "Escalate architectural/ambiguous items via ship_decision_required instead of guessing.",
     parameters: Type.Object({
       stage: Type.String({ description: "Stage that raised this" }),
       what: Type.String({ description: "What needs deciding" }),
@@ -92,38 +112,7 @@ export default function (pi: ExtensionAPI) {
       state.status = "paused";
       writeState(state);
       appendJournal(ctx.cwd, state.runId, `needsDecision [${params.stage}]: ${params.what}`);
-      return okText(`ship_decision recorded; run paused (${state.needsDecision.length} pending)`);
-    },
-  });
-
-  // ---- ship_pr: record PR + advance phase -------------------------------
-  pi.registerTool({
-    name: "ship_pr",
-    label: "Ship PR",
-    description:
-      "Record the pull request for this run and optionally advance the phase (to 'ci' once the PR is open, or 'done' when finished). Call after opening/finding the PR.",
-    parameters: Type.Object({
-      repo: Type.Optional(Type.String({ description: "owner/repo" })),
-      number: Type.Optional(Type.Number({ description: "PR number" })),
-      url: Type.Optional(Type.String({ description: "PR url" })),
-      phase: Type.Optional(StringEnum(["pipeline", "ci", "done"] as const)),
-    }),
-    async execute(_id, params, _signal, _onUpdate, ctx) {
-      const state = loadState(ctx.cwd);
-      if (!state) return errText("no active ship run in this worktree");
-      state.pr = {
-        ...(state.pr ?? {}),
-        ...(params.repo !== undefined ? { repo: params.repo } : {}),
-        ...(params.number !== undefined ? { number: params.number } : {}),
-        ...(params.url !== undefined ? { url: params.url } : {}),
-      };
-      if (params.phase) {
-        state.phase = params.phase as Phase;
-        if (params.phase === "done") state.status = "done";
-      }
-      writeState(state);
-      appendJournal(ctx.cwd, state.runId, `pr recorded${params.number ? ` #${params.number}` : ""}${params.phase ? `; phase→${params.phase}` : ""}`);
-      return okText(`ship_pr recorded${params.phase ? `; phase=${params.phase}` : ""}`);
+      return okText(`ship_decision_required recorded; run paused (${state.needsDecision.length} pending)`);
     },
   });
 }

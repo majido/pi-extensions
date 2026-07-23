@@ -43,10 +43,11 @@ accurate:
   running** ("adding RTFallbackSpec…"), **past tense when done** ("added
   RTFallbackSpec; verify green"). Call it promptly on every transition — the
   footer reflects exactly what you last reported.
-- **`ship_decision(stage, what, tradeoff?, suggestion?)`** — escalate a
+- **`ship_decision_required(stage, what, tradeoff?, suggestion?)`** — escalate a
   design-level/ambiguous item; records it and pauses the run.
-- **`ship_pr(repo, number, url, phase?)`** — record the PR when opened; set
-  `phase: "ci"` once it's open, `phase: "done"` when finished.
+- On the **`pr`** stage, pass **`pr_url`** to `ship_stage` when the PR is open
+  (repo + number are auto-extracted). There is no separate phase to set — the
+  stage statuses are the source of truth for where the run is.
 
 Still maintain two files directly:
 
@@ -78,9 +79,9 @@ at the start of every run (user steering) and honor it.
 
 ## needsDecision & steering
 
-- To escalate: call `ship_decision(stage, what, tradeoff?, suggestion?)`, note it
-  in `journal.md`, and stop working that item. The tool pauses the run and the
-  extension notifies the user.
+- To escalate: call `ship_decision_required(stage, what, tradeoff?, suggestion?)`,
+  note it in `journal.md`, and stop working that item. The tool pauses the run
+  and the extension notifies the user.
 - The user's answer arrives as an entry in `instructions[]` on your next spawn
   (or via live steer during a running stage). Read `instructions[]` at the start
   of every run and honor it.
@@ -122,10 +123,10 @@ Autonomous in v1 (no confirm gate).
 
 ### 6. pr — load `pull-requests`
 Open a **draft** PR: clear title, body summarizing what changed and why, reuse
-the repo template if present. Capture PR number, URL, `owner/repo` into
-`state.json.pr`. Autonomous in v1. If Olympus → dual-PR `needsDecision` instead.
-Artifact: `pr-body.md`. End of Phase 1: set `phase: "ci"`, initialize
-`ci.intervalMin = 1` and `ci.nextCheckAt`, and let the extension arm the first
+the repo template if present. Report it via `ship_stage("pr", "done", note, pr_url=<url>)` — repo/number are
+extracted from the URL. Autonomous in v1. If Olympus → dual-PR
+`ship_decision_required` instead. Artifact: `pr-body.md`. Completing the `pr`
+stage marks the transition into monitoring; the extension arms the first CI
 cycle.
 
 ### 7. ci — load `ci-triage-fix` (Phase 2, per cycle)
@@ -149,14 +150,16 @@ checks are green, review is approved, and nothing is unresolved.
    `git log`/`git diff`/`gh` so you know exactly where things stand.
 2. Do the current phase's work (Phase 1: continue the pipeline; Phase 2: one
    cycle).
-3. Report progress via `ship_stage`/`ship_pr` and append `journal.md`.
-4. Escalate blockers via `ship_decision` and stop them; keep going on the rest.
+3. Report progress via `ship_stage` (with `pr_url` on the pr stage) and append
+   `journal.md`.
+4. Escalate blockers via `ship_decision_required` and stop them; keep going on
+   the rest.
 5. Report a concise status line. In Phase 2, ensure the next cycle is armed (or
    explain why you stopped).
 
 ## Red flags
 
-- Hand-editing `state.json` instead of calling `ship_stage`/`ship_decision`/`ship_pr`
+- Hand-editing `state.json` instead of calling `ship_stage`/`ship_decision_required`
 - Assuming memory across cycles instead of reading `journal.md`/`state.json`
 - Leaving a stage note stale (not calling `ship_stage` on transition)
 - Auto-doing design-level work instead of escalating

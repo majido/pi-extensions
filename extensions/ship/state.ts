@@ -38,7 +38,8 @@ export type RunStatus =
   | "failed"
   | "aborted";
 
-export type Phase = "pipeline" | "ci" | "done";
+/** Stages that are ongoing PR monitoring rather than the linear pipeline. */
+export const MONITORING_STAGES = new Set(["ci", "comments"]);
 
 export interface StageState {
   id: string;
@@ -62,7 +63,6 @@ export interface ShipState {
   runId: string;
   cwd: string;
   parentSessionFile?: string;
-  phase: Phase;
   currentRun?: {
     asyncId?: string;
     asyncDir?: string;
@@ -206,14 +206,31 @@ export function reconcileLiveness(
   const rt = readRuntimeState(state.currentRun?.asyncDir);
   if (rt === undefined || rt === "running") return { state, changed: false };
 
-  // Executor has ended.
-  if (state.phase === "ci") {
-    // Between Phase-2 cycles the executor exiting is expected, not a failure.
-    if (state.status === "waiting-ci") return { state, changed: false };
-    return { state: { ...state, status: "waiting-ci" }, changed: true };
+  // Executor has ended. Derive intent from stage statuses (no separate phase).
+  const allDone = state.stages.every(
+    (s) => s.status === "done" || s.status === "skipped",
+  );
+  if (allDone) {
+    return state.status === "done"
+      ? { state, changed: false }
+      : { state: { ...state, status: "done" }, changed: true };
   }
-  // Phase 1: exiting mid-pipeline means it stalled. Any stage left "running"
-  // is now incomplete — stop the footer from claiming it's still running.
+
+  // Are we in PR monitoring? Either a monitoring stage is active, or the
+  // pipeline reached the PR (pr stage done) and monitoring is armed between
+  // cycles. Executor exiting then is expected, not a failure.
+  const running = state.stages.find((s) => s.status === "running");
+  const prDone = state.stages.find((s) => s.id === "pr")?.status === "done";
+  const monitoring =
+    (running && MONITORING_STAGES.has(running.id)) || (!running && prDone);
+  if (monitoring) {
+    return state.status === "waiting-ci"
+      ? { state, changed: false }
+      : { state: { ...state, status: "waiting-ci" }, changed: true };
+  }
+
+  // Otherwise the executor exited mid-pipeline: it stalled. Any stage left
+  // "running" is now incomplete — stop the footer from claiming it's running.
   const stages = state.stages.map((s) =>
     s.status === "running"
       ? { ...s, status: "failed" as StageStatus, note: `${s.note ?? ""} (executor exited)`.trim() }
@@ -245,7 +262,6 @@ export function createRun(opts: NewRunOptions): ShipState {
     runId,
     cwd: opts.cwd,
     parentSessionFile: opts.parentSessionFile,
-    phase: "pipeline",
     status: "running",
     stages: opts.stages.map((id) => ({ id, status: "pending" })),
     needsDecision: [],
