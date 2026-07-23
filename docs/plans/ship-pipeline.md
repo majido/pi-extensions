@@ -289,11 +289,17 @@ Any pi session started in the worktree discovers the run via
    permanent model (oracle-reviewed).
 2. **Skills:** `ci-triage-fix`, `pr-comment-triage-fix` (standalone, duplicated
    from pr-sitter-monitor §5, useful immediately), `verify-change`, then `ship`.
-3. **Extension v1:** `/ship` + state file + footer status; Phase 1 only
-   (review→test→docs→lint, no push). Steering via `/ship-steer`.
-4. **v2:** push/pr + Phase 2 cycles (schedule_prompt wiring, backoff,
+3. **Extension v1:** `/ship` + state file + footer status; Phase 1 stages.
+   Steering via `/ship-steer`. **done.**
+   - Reliability hardening: extension-owned `ship_stage`/`ship_decision_required`
+     tools (agent calls, handler writes) + runtime-liveness reconciliation from
+     `status.json` so the footer never shows a phantom "running". **done.**
+   - Status overlay panel (`/ship-status`, `Ctrl+S`): per-stage rows (glyph,
+     model, duration, one-liner), decisions, PR link, artifact viewer; keys
+     `↑↓/enter/s/a/esc`. **done.**
+4. **v2 (next):** push/pr + Phase 2 cycles (schedule_prompt wiring, backoff,
    catch-up-on-attach); global index; `/ship-list`.
-5. **v3:** overlay panel with keys + inline decision answering.
+5. **v3:** inline decision answering in the overlay; live same-session steer.
 6. Retire pr-sitter after ship covers a real PR end-to-end.
 
 Verification items for v2 (from oracle review):

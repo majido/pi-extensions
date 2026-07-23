@@ -14,6 +14,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { footerLine, textStatus } from "./render.ts";
+import { ShipOverlay, type OverlayAction } from "./overlay.ts";
 import { interruptRun, spawnPipeline } from "./spawn.ts";
 import {
   DEFAULT_STAGES,
@@ -134,6 +135,72 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  // Open the status overlay (TUI only). Returns the chosen action so the
+  // caller can run dialog/confirm flows outside the component.
+  const openOverlay = async (ctx: any): Promise<void> => {
+    const cwd = ctxCwd(ctx);
+    const state = cwd ? readActiveState(cwd) : undefined;
+    if (!cwd || !state) {
+      ctx.ui.notify("ship: no active run in this worktree", "info");
+      return;
+    }
+    if (ctx.mode !== "tui") {
+      ctx.ui.notify(textStatus(state), "info");
+      return;
+    }
+    const action = await ctx.ui.custom<OverlayAction>(
+      (tui: any, theme: any, _kb: any, done: (a: OverlayAction) => void) => {
+        const comp = new ShipOverlay(cwd, theme, tui, done);
+        const iv = setInterval(() => {
+          comp.invalidate();
+          tui.requestRender();
+        }, 2000);
+        (iv as { unref?: () => void }).unref?.();
+        comp.onClose = () => clearInterval(iv);
+        return {
+          render: (w: number) => comp.render(w),
+          invalidate: () => comp.invalidate(),
+          handleInput: (d: string) => comp.handleInput(d),
+        };
+      },
+      {
+        overlay: true,
+        overlayOptions: {
+          anchor: "right-center",
+          width: "48%",
+          minWidth: 46,
+          maxHeight: "85%",
+          margin: 1,
+        },
+      },
+    );
+    if (action?.kind === "steer") {
+      ctx.ui.setEditorText("/ship-steer ");
+    } else if (action?.kind === "abort") {
+      await abortRun(ctx);
+    }
+  };
+
+  // Abort the active run: confirm, interrupt the executor, mark aborted.
+  const abortRun = async (ctx: any): Promise<void> => {
+    const cwd = ctxCwd(ctx);
+    const runId = cwd ? readCurrentRunId(cwd) : undefined;
+    const state = cwd && runId ? readState(cwd, runId) : undefined;
+    if (!state) {
+      ctx.ui.notify("ship: no active run to abort", "info");
+      return;
+    }
+    const ok = await ctx.ui.confirm("Abort ship run?", `Stop ${state.runId}?`);
+    if (!ok) return;
+    const events = getEvents(pi);
+    if (events && state.currentRun?.asyncId) interruptRun(events, state.currentRun.asyncId);
+    state.status = "aborted";
+    writeState(state);
+    setCurrentPointer(cwd!, undefined);
+    renderFooter(ctx);
+    ctx.ui.notify(`ship: aborted ${state.runId}`, "info");
+  };
+
   // ---- /ship ----------------------------------------------------------------
   pi.registerCommand("ship", {
     description:
@@ -217,15 +284,9 @@ export default function (pi: ExtensionAPI) {
 
   // ---- /ship-status ---------------------------------------------------------
   pi.registerCommand("ship-status", {
-    description: "Show the current ship pipeline status",
+    description: "Open the ship pipeline status panel",
     handler: async (_args, ctx) => {
-      const cwd = ctxCwd(ctx);
-      const state = cwd ? readActiveState(cwd) : undefined;
-      if (!state) {
-        ctx.ui.notify("ship: no active run in this worktree", "info");
-        return;
-      }
-      ctx.ui.notify(textStatus(state), "info");
+      await openOverlay(ctx);
     },
   });
 
@@ -258,35 +319,15 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("ship-abort", {
     description: "Stop the active ship run (keeps artifacts)",
     handler: async (_args, ctx) => {
-      const cwd = ctxCwd(ctx);
-      const runId = cwd ? readCurrentRunId(cwd) : undefined;
-      const state = cwd && runId ? readState(cwd, runId) : undefined;
-      if (!state) {
-        ctx.ui.notify("ship: no active run to abort", "info");
-        return;
-      }
-      const ok = await ctx.ui.confirm("Abort ship run?", `Stop ${state.runId}?`);
-      if (!ok) return;
-
-      const events = getEvents(pi);
-      if (events && state.currentRun?.asyncId) {
-        interruptRun(events, state.currentRun.asyncId);
-      }
-      state.status = "aborted";
-      writeState(state);
-      setCurrentPointer(cwd!, undefined);
-      renderFooter(ctx);
-      ctx.ui.notify(`ship: aborted ${state.runId}`, "info");
+      await abortRun(ctx);
     },
   });
 
-  // ---- Ctrl+S opens status --------------------------------------------------
+  // ---- Ctrl+S opens the status panel ----------------------------------------
   pi.registerShortcut?.("ctrl+s", {
-    description: "Show ship pipeline status",
+    description: "Open ship pipeline status panel",
     handler: async (ctx: any) => {
-      const cwd = ctxCwd(ctx);
-      const state = cwd ? readActiveState(cwd) : undefined;
-      if (state) ctx.ui.notify(textStatus(state), "info");
+      await openOverlay(ctx);
     },
   });
 
