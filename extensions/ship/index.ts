@@ -166,11 +166,12 @@ export default function (pi: ExtensionAPI) {
       {
         overlay: true,
         overlayOptions: {
-          anchor: "right-center",
+          anchor: "top-right",
           width: "48%",
           minWidth: 46,
-          maxHeight: "85%",
-          margin: 1,
+          maxHeight: "90%",
+          offsetY: 1,
+          offsetX: -1,
         },
       },
     );

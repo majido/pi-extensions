@@ -1,15 +1,15 @@
 /**
- * ship overlay — the per-stage status panel (right-anchored). Two modes:
+ * ship overlay — the per-stage status panel (top-right, rounded border, 🚀).
+ * Two modes:
  *   list     → stage rows (glyph, model, duration, one-liner) + decisions + PR
  *   artifact → scrollable view of a stage's <stage>.md
  *
  * Display-only: re-reads state.json each render (live), reconciles liveness
- * from the runtime, and never writes. Actions that mutate (steer, abort) are
- * returned to the caller via done() so the dialog/confirm flow happens outside
- * the component.
+ * from the runtime, and never writes. Mutating actions (steer, abort) are
+ * returned to the caller via done() so dialog/confirm flows happen outside.
  */
 
-import { matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -34,12 +34,14 @@ const GLYPH: Record<string, string> = {
   skipped: "⊘",
   pending: "○",
 };
+// Theme palette colors (theme-safe). accent reads as the active/blue highlight
+// and is distinct from the green `success`; pending is faint gray.
 const COLOR: Record<string, string> = {
-  done: "success",
-  running: "accent",
-  failed: "error",
-  skipped: "dim",
-  pending: "dim",
+  done: "success", // green — passed
+  running: "accent", // active
+  failed: "error", // red
+  skipped: "muted", // gray
+  pending: "dim", // light gray — not started
 };
 
 function duration(s: StageState): string {
@@ -127,66 +129,93 @@ export class ShipOverlay {
   }
 
   render(width: number): string[] {
-    const t = this.theme;
     const st = this.state();
-    if (!st) return [t.fg("muted", "ship: no active run")];
-    if (this.mode === "artifact") return this.renderArtifact(width);
+    if (!st) return this.frame(["no active run"], width, "ship");
+    const inner = Math.max(12, width - 4);
+    if (this.mode === "artifact") {
+      return this.frame(this.artifactBody(inner), width, this.artifactTitle);
+    }
+    return this.frame(this.listBody(st, inner), width, `ship: ${st.title ?? st.runId}`);
+  }
 
+  private listBody(st: ShipState, inner: number): string[] {
+    const t = this.theme;
     const lines: string[] = [];
-    const title = `ship: ${st.title ?? st.runId}`;
-    lines.push(t.fg("accent", t.bold(truncateToWidth(title, width))));
-    lines.push(t.fg("dim", truncateToWidth(`status: ${st.status}`, width)));
+    lines.push(t.fg("dim", truncateToWidth(`status: ${st.status}`, inner)));
     lines.push("");
 
     st.stages.forEach((s, i) => {
-      const sel = i === this.selected;
-      const glyph = t.fg(COLOR[s.status] ?? "muted", GLYPH[s.status] ?? "?");
-      const name = (COLOR[s.status] ?? "muted") === "dim"
-        ? t.fg("dim", s.id.padEnd(9))
-        : t.fg(COLOR[s.status] ?? "muted", s.id.padEnd(9));
+      const color = COLOR[s.status] ?? "muted";
+      const glyph = t.fg(color, GLYPH[s.status] ?? "?");
+      const nameRaw = s.id.padEnd(9);
+      const name = s.status === "running" ? t.fg(color, t.bold(nameRaw)) : t.fg(color, nameRaw);
       const meta = [s.model, duration(s)].filter(Boolean).join(" ");
       const note = s.note ? `  ${s.note}` : "";
-      let row = `${glyph} ${name} ${t.fg("dim", meta.padEnd(10))}${t.fg("muted", note)}`;
-      row = truncateToWidth(row, width - 2);
-      lines.push(sel ? `${t.fg("accent", "›")} ${row}` : `  ${row}`);
+      const body = `${glyph} ${name} ${t.fg("dim", meta.padEnd(9))}${t.fg("muted", note)}`;
+      const sel = i === this.selected;
+      const marker = sel ? t.fg("accent", "› ") : "  ";
+      lines.push(truncateToWidth(marker + body, inner));
     });
 
     if (st.needsDecision.length) {
       lines.push("");
-      lines.push(t.fg("error", truncateToWidth(`⚠ ${st.needsDecision.length} decision(s) pending:`, width)));
+      lines.push(t.fg("error", truncateToWidth(`⚠ ${st.needsDecision.length} decision(s) pending:`, inner)));
       for (const d of st.needsDecision) {
-        lines.push(truncateToWidth(t.fg("error", `  · [${d.stage}] ${d.what}`), width));
-        if (d.suggestion)
-          lines.push(truncateToWidth(t.fg("dim", `      → ${d.suggestion}`), width));
+        lines.push(truncateToWidth(t.fg("error", `  · [${d.stage}] ${d.what}`), inner));
+        if (d.suggestion) lines.push(truncateToWidth(t.fg("dim", `      → ${d.suggestion}`), inner));
       }
+    }
+
+    if (st.error) {
+      lines.push("");
+      lines.push(truncateToWidth(t.fg("error", `error: ${st.error}`), inner));
     }
 
     if (st.pr?.url) {
       lines.push("");
-      lines.push(truncateToWidth(t.fg("mdLink", `PR: ${st.pr.url}`), width));
+      lines.push(truncateToWidth(t.fg("mdLink", `PR: ${st.pr.url}`), inner));
     }
 
     lines.push("");
-    lines.push(t.fg("dim", truncateToWidth("↑↓ stage · enter artifact · s steer · a abort · esc close", width)));
+    lines.push(t.fg("dim", truncateToWidth("↑↓ stage · enter artifact · s steer · a abort · esc close", inner)));
     return lines;
   }
 
-  private renderArtifact(width: number): string[] {
+  private artifactBody(inner: number): string[] {
     const t = this.theme;
-    const out: string[] = [];
-    out.push(t.fg("accent", t.bold(truncateToWidth(this.artifactTitle, width))));
-    out.push("");
     const wrapped: string[] = [];
     for (const raw of this.artifactLines) {
-      const w = wrapTextWithAnsi(raw, width);
-      for (const l of w) wrapped.push(l);
+      for (const l of wrapTextWithAnsi(raw, inner)) wrapped.push(l);
     }
-    const visible = wrapped.slice(this.scroll, this.scroll + 24);
-    for (const l of visible) out.push(truncateToWidth(l, width));
+    const out: string[] = [];
+    const visibleLines = wrapped.slice(this.scroll, this.scroll + 22);
+    for (const l of visibleLines) out.push(truncateToWidth(l, inner));
     out.push("");
-    const more = wrapped.length > this.scroll + 24 ? " · ↓ more" : "";
-    out.push(t.fg("dim", truncateToWidth(`↑↓ scroll${more} · esc back`, width)));
+    const more = wrapped.length > this.scroll + 22 ? " · ↓ more" : "";
+    out.push(t.fg("dim", truncateToWidth(`↑↓ scroll${more} · esc back`, inner)));
     return out;
+  }
+
+  /** Wrap body lines in a rounded border with a 🚀 title in the top edge. */
+  private frame(body: string[], width: number, title: string): string[] {
+    const t = this.theme;
+    const b = (s: string) => t.fg("borderAccent", s);
+    const inner = Math.max(12, width - 4);
+
+    const titleText = `🚀 ${title}`;
+    const head = `╭─ ${titleText} `;
+    const used = visibleWidth(head); // ╭─ + space + title + space
+    const fill = Math.max(0, width - used - 1); // -1 for the closing ╮
+    const top = b("╭─ ") + t.fg("accent", t.bold(titleText)) + " " + b("─".repeat(fill) + "╮");
+
+    const rows = body.map((line) => {
+      const clipped = truncateToWidth(line, inner);
+      const pad = Math.max(0, inner - visibleWidth(clipped));
+      return b("│ ") + clipped + " ".repeat(pad) + b(" │");
+    });
+
+    const bottom = b("╰" + "─".repeat(Math.max(0, width - 2)) + "╯");
+    return [top, ...rows, bottom];
   }
 
   invalidate(): void {}
