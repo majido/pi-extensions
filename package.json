@@ -10,6 +10,9 @@
     "extensions": ["./extensions", "!extensions/*.test.ts"],
     "skills": ["./skills"],
     "prompts": ["./prompts"],
-    "themes": ["./themes"]
+    "themes": ["./themes"],
+    "subagents": {
+      "agents": ["./agents"]
+    }
   }
 }

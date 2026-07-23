@@ -30,26 +30,37 @@ Because a later cycle is a fresh session, **write down anything the next cycle
 needs**: append to `journal.md` and keep `state.json` accurate. Never assume you
 remember what a previous cycle did — read it.
 
-## State files (in `.pi/ship/<runId>/`)
+## Reporting status (use the tools — never hand-write state.json)
 
-The ship extension tells you `runId` and the state dir. Two files are yours to
-maintain:
+The ship extension tells you `runId` and the state dir. **Do not edit
+`state.json` directly.** Report through the provided tools; their handlers own
+the write, so status is always well-formed and the user's live view stays
+accurate:
 
-- **`state.json`** — machine state the extension renders. Update:
-  - `stage` and the matching `stages[].status` (`pending`→`running`→`done`/`failed`/`skipped`)
-  - `stages[].note` — a short one-liner: **present tense while running**
-    ("adding RTFallbackSpec…"), **past tense when done** ("added RTFallbackSpec;
-    verify green"). This is what the user sees.
-  - `needsDecision[]`, `pr`, `ci`, `seenCommentIds`/`seenReviewIds` as relevant
-  - Consume `instructions[]` (user steering for this spawn) on read, then clear it
-  - Write atomically (write temp + rename) so the watcher never sees half a file.
+- **`ship_stage(stage, status, note)`** — call at the START of each stage
+  (`status: running`) and again when it finishes (`done`/`failed`/`skipped`).
+  The `note` is a short one-liner shown live to the user: **present tense while
+  running** ("adding RTFallbackSpec…"), **past tense when done** ("added
+  RTFallbackSpec; verify green"). Call it promptly on every transition — the
+  footer reflects exactly what you last reported.
+- **`ship_decision(stage, what, tradeoff?, suggestion?)`** — escalate a
+  design-level/ambiguous item; records it and pauses the run.
+- **`ship_pr(repo, number, url, phase?)`** — record the PR when opened; set
+  `phase: "ci"` once it's open, `phase: "done"` when finished.
+
+Still maintain two files directly:
+
 - **`journal.md`** — append-only narrative. Each stage/cycle: what you tried,
   decisions and rationale, and your mid-stage position if you stop partway. This
-  is the memory bridge across fresh cycles and the audit trail.
+  is the memory bridge across fresh cycles and the audit trail. (`ship_stage`
+  appends a line automatically; add richer context yourself.)
+- **`<stage>.md`** — each stage's detailed output (e.g. `review.md`, `test.md`,
+  `pr-body.md`) in the state dir.
 
-Also write each stage's detailed output to `<stage>.md` in the state dir
-(e.g. `review.md`, `test.md`, `pr-body.md`); reference it from
-`stages[].artifact`.
+Liveness is tracked by the extension from the runtime independently of you, so a
+forgotten final transition won't strand the footer — but report faithfully
+anyway so the mid-run view is correct. Read `instructions[]` from `state.json`
+at the start of every run (user steering) and honor it.
 
 ## Operating rules (always)
 
@@ -67,9 +78,9 @@ Also write each stage's detailed output to `<stage>.md` in the state dir
 
 ## needsDecision & steering
 
-- To escalate: append to `state.json.needsDecision[]` with `{ stage, what,
-  tradeoff, suggestion }`, set `status: "paused"`, note it in `journal.md`, and
-  stop working that item. The extension notifies the user.
+- To escalate: call `ship_decision(stage, what, tradeoff?, suggestion?)`, note it
+  in `journal.md`, and stop working that item. The tool pauses the run and the
+  extension notifies the user.
 - The user's answer arrives as an entry in `instructions[]` on your next spawn
   (or via live steer during a running stage). Read `instructions[]` at the start
   of every run and honor it.
@@ -138,16 +149,16 @@ checks are green, review is approved, and nothing is unresolved.
    `git log`/`git diff`/`gh` so you know exactly where things stand.
 2. Do the current phase's work (Phase 1: continue the pipeline; Phase 2: one
    cycle).
-3. Update `state.json` (stage, notes, dedup, decisions) atomically and append
-   `journal.md`.
-4. Escalate blockers to `needsDecision` and stop them; keep going on the rest.
+3. Report progress via `ship_stage`/`ship_pr` and append `journal.md`.
+4. Escalate blockers via `ship_decision` and stop them; keep going on the rest.
 5. Report a concise status line. In Phase 2, ensure the next cycle is armed (or
    explain why you stopped).
 
 ## Red flags
 
+- Hand-editing `state.json` instead of calling `ship_stage`/`ship_decision`/`ship_pr`
 - Assuming memory across cycles instead of reading `journal.md`/`state.json`
-- Leaving `stages[].note` stale so the user's view lies
+- Leaving a stage note stale (not calling `ship_stage` on transition)
 - Auto-doing design-level work instead of escalating
 - Pushing without local validation, or to a branch you don't own
 - Posting a reply without the `🤖 **<Model>**:` attribution

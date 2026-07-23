@@ -29,6 +29,7 @@ export interface SpawnPipelineParams {
 
 export interface SpawnResult {
   asyncId?: string;
+  asyncDir?: string;
   error?: string;
   rawText?: string;
 }
@@ -54,7 +55,7 @@ function buildTask(p: SpawnPipelineParams): string {
 }
 
 function parseAsyncId(text: string): string | undefined {
-  // Async spawn message looks like: "Async: delegate [<uuid>]"
+  // Fallback only. Async spawn message looks like: "Async: ship [<uuid>]"
   const m = text.match(/\[([0-9a-f]{8}-[0-9a-f-]{20,})\]/i);
   return m?.[1];
 }
@@ -99,8 +100,14 @@ export function spawnPipeline(
         finish({ error: reply.error?.message ?? "spawn failed" });
         return;
       }
+      // Prefer structured details ({ asyncId, asyncDir }); fall back to text.
+      const details = (reply.data as { details?: { asyncId?: string; asyncDir?: string } })?.details;
       const text = reply.data?.text ?? "";
-      finish({ asyncId: parseAsyncId(text), rawText: text });
+      finish({
+        asyncId: details?.asyncId ?? parseAsyncId(text),
+        asyncDir: details?.asyncDir,
+        rawText: text,
+      });
     });
 
     events.emit(RPC_REQUEST_EVENT, {
@@ -108,9 +115,8 @@ export function spawnPipeline(
       requestId,
       method: "spawn",
       params: {
-        agent: "delegate",
+        agent: "ship",
         task: buildTask(params),
-        skill: "ship",
         context: params.context ?? "fork",
         async: true,
         cwd: params.cwd,

@@ -165,6 +165,63 @@ export function setCurrentPointer(cwd: string, runId: string | undefined): void 
   atomicWrite(p, JSON.stringify({ runId: runId ?? null }, null, 2));
 }
 
+/**
+ * Read the pi-subagents runtime status.json for the executor async run.
+ * This is the AUTHORITATIVE liveness signal — emitted by the runtime, not the
+ * agent — so we never depend on the agent to tell us whether it is still
+ * running. Returns the raw runtime state ("running" | "complete" | "failed" |
+ * "stopped" | …) or undefined when the dir/file is unavailable.
+ */
+export function readRuntimeState(asyncDir?: string): string | undefined {
+  if (!asyncDir) return undefined;
+  const p = join(asyncDir, "status.json");
+  if (!existsSync(p)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(p, "utf-8")) as { state?: string };
+    return parsed.state;
+  } catch {
+    return undefined;
+  }
+}
+
+export function executorIsLive(state: ShipState): boolean {
+  const rt = readRuntimeState(state.currentRun?.asyncDir);
+  if (rt === undefined) return true; // unknown → don't claim it's dead
+  return rt === "running";
+}
+
+/**
+ * Reconcile display status against runtime liveness. If the executor async run
+ * has ended (complete/failed/stopped) but the ship state still shows a stage
+ * running and the pipeline isn't done, the run stalled — the executor exited
+ * before finishing. Returns a possibly-updated copy plus whether it changed,
+ * so the caller can persist the correction and stop the footer from lying.
+ */
+export function reconcileLiveness(
+  state: ShipState,
+): { state: ShipState; changed: boolean } {
+  if (state.status !== "running" && state.status !== "waiting-ci") {
+    return { state, changed: false };
+  }
+  const rt = readRuntimeState(state.currentRun?.asyncDir);
+  if (rt === undefined || rt === "running") return { state, changed: false };
+
+  // Executor has ended.
+  if (state.phase === "ci") {
+    // Between Phase-2 cycles the executor exiting is expected, not a failure.
+    if (state.status === "waiting-ci") return { state, changed: false };
+    return { state: { ...state, status: "waiting-ci" }, changed: true };
+  }
+  // Phase 1: exiting mid-pipeline means it stalled. Any stage left "running"
+  // is now incomplete — stop the footer from claiming it's still running.
+  const stages = state.stages.map((s) =>
+    s.status === "running"
+      ? { ...s, status: "failed" as StageStatus, note: `${s.note ?? ""} (executor exited)`.trim() }
+      : s,
+  );
+  return { state: { ...state, stages, status: "failed" }, changed: true };
+}
+
 export function appendJournal(cwd: string, runId: string, line: string): void {
   const dir = runDir(cwd, runId);
   mkdirSync(dir, { recursive: true });

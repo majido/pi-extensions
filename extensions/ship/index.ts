@@ -18,6 +18,7 @@ import { interruptRun, spawnPipeline } from "./spawn.ts";
 import {
   DEFAULT_STAGES,
   createRun,
+  reconcileLiveness,
   readActiveState,
   readState,
   readCurrentRunId,
@@ -102,8 +103,17 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setWidget(WIDGET_ID, undefined);
       return;
     }
-    const state = readActiveState(cwd);
-    if (!state || state.status === "done" || state.status === "aborted") {
+    const raw = readActiveState(cwd);
+    if (!raw || raw.status === "done" || raw.status === "aborted") {
+      ctx.ui.setWidget(WIDGET_ID, undefined);
+      return;
+    }
+    // Liveness comes from the runtime, not the agent: if the executor async run
+    // has ended, correct a stale "running" so the footer never lies. Persist
+    // the correction once so it sticks and we stop re-checking.
+    const { state, changed } = reconcileLiveness(raw);
+    if (changed) writeState(state);
+    if (state.status === "done" || state.status === "aborted") {
       ctx.ui.setWidget(WIDGET_ID, undefined);
       return;
     }
@@ -194,7 +204,8 @@ export default function (pi: ExtensionAPI) {
 
       state.currentRun = {
         asyncId: result.asyncId,
-        spawnedBySessionId: undefined,
+        asyncDir: result.asyncDir,
+        spawnedBySessionId: ctxSessionFile(ctx),
       };
       writeState(state);
       ctx.ui.notify(
