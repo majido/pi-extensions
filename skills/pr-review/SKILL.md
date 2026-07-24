@@ -101,7 +101,9 @@ After the selected action is complete, ask explicitly:
 > Should I consider this review done and clean up the review workspace?
 
 If the user confirms, invoke `/review-done` automatically. Do not merely remind
-them to run it. If they decline, leave the review workspace open.
+them to run it. Review cleanup must not run a session retro; `/review-done` only
+returns the review worktree and closes the review workspace. If they decline,
+leave the review workspace open.
 
 ## Step 5 — Posting (only after confirmation)
 
@@ -125,4 +127,5 @@ the exact drafts.
 
 The review is not complete until the user has either declined cleanup or
 confirmed that it is done and `/review-done` has been invoked. `/review-done`
-returns the worktree and closes the review workspace.
+returns the worktree and closes the review workspace; do not run a session retro
+as part of review cleanup.

@@ -36,8 +36,9 @@ Match model strength to judgment demand, not uniformly:
 |------|------|-----|
 | Phase 1 scan + page-list design | strongest available (parent) | choosing the repo's seams is where quality is won or lost |
 | Phase 3 page writers (fan-out) | mid-tier (sonnet-class) | bounded scope, template-driven read+summarize; parallel, so cost scales with page count |
+| Phase 3 per-page review (fan-out, **fresh context**) | mid-tier (sonnet-class), one notch above the writer if available | bounded to one page; adversarial checklist enforcement + spot-checking cited code, not open-ended judgment |
 | Phase 3 synthesis pass | strongest (parent) | reconciling overlap/contradictions across pages needs judgment |
-| Phase 5 review | strongest, **fresh context** | must not inherit the generator's assumptions; subtle inaccuracy detection |
+| Phase 5 whole-wiki review | strongest, **fresh context** | cross-page judgment (overlap, coverage gaps, index fidelity) that a single-page reviewer structurally can't see |
 
 ## Page frontmatter
 
@@ -58,9 +59,9 @@ or owner/status/tags (no consumer).
 
 ## Workflow
 
-Commit at phase boundaries: after Phase 2 (skeleton), after Phase 3 (generation + triage
-execution), after Phase 5 (review fixes). This keeps the review diff clean and makes the
-fan-out recoverable if a writer fails.
+Commit at phase boundaries: after Phase 2 (skeleton), after Phase 3 (generation + per-page
+review + triage execution), after Phase 5 (review fixes). This keeps the review diff clean
+and makes the fan-out recoverable if a writer fails.
 
 If `docs/wiki/index.md` already exists, **do not re-bootstrap**. Maintenance happens
 in-PR via the rules — that's the design. If drift has accumulated anyway (non-Claude
@@ -108,10 +109,10 @@ snippet, `index.md` Maintenance section, `.claude/rules/wiki.md`) because differ
 agents read different ones. Keep the three restatements semantically identical; if the
 contract changes, update all three.
 
-### Phase 3 — One-time generation (subagent fan-out)
+### Phase 3 — One-time generation (subagent fan-out + per-page review)
 
-1. Fan out one subagent per page (parallel — e.g. pi-subagents PARALLEL mode, one task
-   per page). Each task gets:
+1. Fan out one **writer** subagent per page (parallel — e.g. pi-subagents PARALLEL mode,
+   one task per page). Each task gets:
    - the assigned page path as its `output` (distinct files, so parallel writers don't
      collide). This is the one case where subagent output goes **in-repo**, not
      `docs/scratchpad/` — the pages *are* the deliverable.
@@ -120,10 +121,22 @@ contract changes, update all three.
    - any absorb-listed docs for its area, with the instruction: *old docs are leads, not
      truth — verify every absorbed claim against the current code before including it;
      silently drop anything that no longer holds*
-   - the quality bar (below)
-2. **Parent does a synthesis pass** — this is not optional: fix cross-links, remove overlap
-   between pages, verify every cited file path exists, finalize `index.md` summaries.
-3. **Execute the triage dispositions**: delete absorbed/obsolete docs, add historical
+   - the quality bar and style bar (below)
+2. **Fan out one per-page reviewer subagent per page**, once its writer has finished — a
+   second parallel round, one task per page, **fresh context** (a new subagent call, not a
+   forked continuation of that page's writer — see Pitfalls). Each task gets the same
+   scope/quality-bar/style-bar the writer had, plus the page path to edit directly. The
+   reviewer is adversarial and enforces the checklist item by item against the actual page
+   and cited source files, fixing violations **in place** — no findings file, no hand-off;
+   the edited page is the output. It escalates in its reply (not in a file) anything it
+   can't confidently fix itself (an unverifiable factual claim, a question that depends on
+   sibling pages it doesn't have). This is bounded, cheap, and catches most of what a
+   writer's own end-of-task self-check misses — see Pitfalls.
+3. **Parent does a synthesis pass** — this is not optional, and is now scoped to what only
+   the parent can see across all pages: fix cross-links, remove overlap between pages,
+   verify every cited file path still exists after the per-page edits, resolve anything the
+   per-page reviewers escalated, finalize `index.md` summaries.
+4. **Execute the triage dispositions**: delete absorbed/obsolete docs, add historical
    banners, and fix every inbound link (grep for each removed filename — README, other
    docs, code comments).
 
@@ -134,6 +147,48 @@ spec from above):
 - cross-link sibling wiki pages where topics touch
 - describe what IS, not history or future plans
 - start with the required YAML frontmatter (`last_verified`, `verified_against`)
+
+**Style** (a reviewer will reject pages that violate these):
+- Write like a technical writer explaining the system to a new engineer —
+  flowing sentences that say what something does and why, not compressed
+  noun-phrase notation (`X (Y, Z) — A, B, C`) or telegraphic fragments.
+- Every file/path reference is a real markdown link, e.g. `[client](../../frontend/src/api/client.ts)`
+  or `[client.ts](frontend/src/api/client.ts)` (link text lowercase/code, matching
+  surrounding prose) — never a bare backticked path with no link, and never a
+  parenthetical dump of three or four backticked paths in a row.
+- When a section enumerates a **closed, small set that fully defines a
+  contract** — all of a manifest's scripts, all variants of an enum/union,
+  all fields of a request — list every item; compressing three out of four
+  package.json scripts into a sentence and silently dropping the fourth is a
+  correctness bug, not a style win. Use a bulleted list once that set is more
+  than ~3 items, and give each bullet a short, consistent label (prefer a
+  descriptive name — "Sidebar", "Schedules" — over a bare filename, even
+  though the filename still appears as the link target). Sibling bullets in
+  the same list must use the same label style; don't mix feature names and
+  filenames across bullets.
+- Don't enumerate exhaustively when the set is **open-ended or illustrative**
+  (which test files exist, which components share a pattern, which routes an
+  API client wraps) — a category + one link suffices, e.g. "the test suite
+  covers the core UI components; see [tests](../../frontend/src/)" beats
+  naming every `*.test.ts` file. Name at most 1-2 illustrative examples only
+  if they clarify scope. Never name a file in prose as an example without
+  linking it — if it's not worth a link, don't name it, fold it into "a few
+  others" instead.
+- When something is asymmetric or has a notable exception (one method behaves
+  differently from its siblings, one route streams while others return JSON),
+  say what's different and why in a lead sentence before describing the
+  mechanism — don't bury the interesting part inside a flat list of every
+  method/route.
+- Cut implementation-detail lists (every parameter, every backend route) in
+  favor of the shape and the interesting exceptions; link to the source file
+  for the exhaustive version.
+- **Cheap self-check before writing the file** (first line of defense, not the backstop —
+  the per-page reviewer in Phase 3 step 2 is what actually enforces this): scan your own
+  draft for every backticked or plain-text token that looks like a filename (`.ts`, `.py`,
+  `.css`, `.json`, `.md`, etc.). Each one must either already have a markdown link earlier
+  in the page, or get one right there. This most often slips into "a few others" style
+  examples (stylesheets, helper files) named in passing; if you're not going to link it,
+  don't name it.
 
 ### Phase 4 — Install rules
 
@@ -147,17 +202,23 @@ spec from above):
 3. If the repo uses Cline, mirror the unscoped rule into `.clinerules/` (path scoping is
    Claude Code-only; other agents rely on the index).
 
-### Phase 5 — Review (fresh context, read-only)
+### Phase 5 — Whole-wiki review (fresh context, read-only, cross-page only)
 
-1. Spawn a fresh-context, read-only reviewer subagent (strongest tier). It must **verify
-   claims against the code**, not just polish prose. Checklist for the reviewer:
-   - accuracy: spot-check factual claims and cited paths against the actual source
+Phase 3's per-page reviewer already enforced the quality/style bar and spot-checked claims
+within each page. Phase 5 exists for the concerns that only become visible with *all* pages
+in view at once — don't re-litigate single-page hygiene here.
+
+1. Spawn a fresh-context, read-only reviewer subagent (strongest tier), given every page.
+   Checklist for the reviewer:
    - coverage: significant subsystems with no page, or page sections that miss the point
    - overlap/contradiction between pages
    - index fidelity: summaries in `index.md` match page content
    - scope violations: history/changelog/plan content that doesn't belong in a wiki
+   - a light spot-check of a few claims per page (not exhaustive re-verification — that
+     was Phase 3's job) as a sanity check that the per-page pass actually ran
 2. Reviewer writes findings to a scratch file (e.g. `docs/scratchpad/wiki-review.md`);
-   it does not edit the wiki.
+   it does not edit the wiki — cross-page fixes often touch multiple files together, so
+   the parent should exercise judgment before applying them, unlike the single-page case.
 3. **Parent applies fixes as sole writer**, exercising judgment on which findings to accept.
 4. If review found major structural problems (wrong page cuts), fix and re-review once;
    don't loop indefinitely.
@@ -213,7 +274,13 @@ Future sessions must, before finishing a change:
 - **Skipping the synthesis pass** — parallel subagents produce overlapping/contradictory
   pages; the parent must reconcile.
 - **Reviewer with inherited context** — a reviewer forked from the generating session
-  rubber-stamps; it must start fresh. And it stays read-only: one writer per worktree.
+  rubber-stamps; it must start fresh. This applies to the Phase 3 per-page reviewer too:
+  even though it runs immediately after that page's writer, it must be a new subagent call
+  with `context: fresh`, not a chained continuation of the writer's session — otherwise it
+  inherits the same blind spots it exists to catch. The whole-wiki Phase 5 reviewer stays
+  read-only (cross-page fixes need parent judgment); the per-page reviewer is the one
+  exception that edits directly, and only within its own page — one writer per page at a
+  time, never touching sibling pages.
 - **Over-speccing models** — frontier models for page writers roughly triples fan-out cost
   for marginal gain; spend the budget on synthesis and review instead.
 - **Wiki as changelog** — reject "we changed X to Y" phrasing; the wiki states the current truth.
@@ -221,6 +288,9 @@ Future sessions must, before finishing a change:
   claims into an authoritative-looking wiki; every absorbed claim gets re-verified against code.
 - **Deleting decision records** — design docs and ADRs answer "why is it this way"; the wiki
   can't. Mark them historical instead of deleting.
+- **Per-page reviewer scope creep** — if it starts editing a sibling page or `index.md` to
+  "fix" something, stop it: it doesn't have full-wiki context, that's exactly what Phase 5
+  and the synthesis pass are for.
 
 ## Success criteria
 

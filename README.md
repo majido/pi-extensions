@@ -93,7 +93,7 @@ Models that are only served on the `global` Vertex endpoint are routed there aut
 
 ### Workflow commands (from agent-skills)
 
-`/plan` · `/build [auto]` · `/test` · `/review` · `/code-simplify` — planning, incremental TDD implementation, testing, five-axis code review, and behavior-preserving simplification. Ported from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) (MIT), together with the 10 skills that power them and shared checklists in `references/`. See `docs/RETIRED.md` for the personal skills they replace.
+`/spec` · `/plan` · `/build [auto]` · `/test` · `/review` · `/code-simplify` — spec-driven development, planning, incremental TDD implementation, testing, five-axis code review, and behavior-preserving simplification. Ported from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) (MIT), together with the associated skills and shared checklists in `references/`. See `docs/RETIRED.md` for the personal skills they replace.
 
 ### pr-sitter
 
@@ -104,7 +104,7 @@ Models that are only served on the `global` Vertex endpoint are routed there aut
 - **commit** — Conventional Commits guidance; read before making git commits.
 - **session-retro** — structured, evidence-cited session retrospective; used by `/branch-done` and reusable standalone. Retros are written to `~/.agents/retros/<YYYY-MM-DD>-<slug>.md`.
 - **skillify** — turn a repeatable workflow from the current session into a reusable skill draft.
-- **agent-skills adoption** — 10 skills from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills): planning-and-task-breakdown, incremental-implementation, test-driven-development, code-review-and-quality, code-simplification, debugging-and-error-recovery, doubt-driven-development, browser-testing-with-devtools, security-and-hardening, performance-optimization. Shared checklists live in `references/` and are linked from skills via `../../references/`.
+- **agent-skills adoption** — 13 skills from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills): spec-driven-development, context-engineering, planning-and-task-breakdown, incremental-implementation, test-driven-development, code-review-and-quality, code-simplification, debugging-and-error-recovery, doubt-driven-development, browser-testing-with-devtools, security-and-hardening, performance-optimization, documentation-and-adrs. Shared checklists live in `references/` and are linked from skills via `../../references/`.
 
 ## Structure
 

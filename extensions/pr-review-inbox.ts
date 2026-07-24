@@ -190,7 +190,15 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		try {
 			await run("gh", ["pr", "checkout", String(pr.number), "--force"], worktree, 300_000);
 		} catch {
-			await run("git", ["fetch", "origin", `pull/${pr.number}/head`], worktree, 300_000);
+			// `origin` can be the user's fork, where the upstream PR ref is unavailable.
+			// Fetch the PR's immutable head SHA from its canonical repository instead.
+			const headSha = await run(
+				"gh",
+				["api", `repos/${pr.repoFull}/pulls/${pr.number}`, "--jq", ".head.sha"],
+				worktree,
+				30_000,
+			);
+			await run("git", ["fetch", `https://github.com/${pr.repoFull}.git`, headSha], worktree, 300_000);
 			await run("git", ["checkout", "--detach", "FETCH_HEAD"], worktree, 60_000);
 		}
 
