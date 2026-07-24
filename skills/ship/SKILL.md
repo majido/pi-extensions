@@ -65,15 +65,16 @@ at the start of every run (user steering) and honor it.
 
 ## Operating rules (always)
 
-- Branch naming `mvalipour/<feature-description>`. Never operate on
-  `master`/`main`. If on the default branch, create the feature branch first.
-- **Push only to branches you own** (`mvalipour/*`). Prefer **new commits** over
-  amends. Never force-push, never rewrite pushed history, never auto-merge.
+- Work on a feature branch you own. Never operate on `master`/`main`; if you're
+  on the default branch, create a feature branch first. Follow any branch-naming
+  convention from the repo's or your `AGENTS.md`.
+- **Push only to a branch you own.** Prefer **new commits** over amends. Never
+  force-push, never rewrite pushed history, never auto-merge.
 - Conventional Commit titles via the `commit` skill.
-- **Olympus repos need two PRs** (dev/staging + production). If this is an
-  Olympus change, do not silently open one — record a `needsDecision` and stop.
-- **Agent attribution:** every PR/issue comment or review reply you post starts
-  with `🤖 **<Model>**: ` (short model name: `Claude`, `GPT`, `Gemini`).
+- If the repo uses a non-standard release/PR flow (e.g. paired PRs per
+  environment), don't guess — record a `needsDecision` and stop.
+- **Comment attribution:** follow the attribution convention in your
+  `AGENTS.md`, if any, when posting PR/issue comments or review replies.
 - Only act autonomously on **straightforward** work. Anything design-level,
   ambiguous, risky, or scope-expanding → `needsDecision` and stop that item.
 
@@ -118,14 +119,15 @@ linter can't fix mechanically is out of scope here.
 ### 5. push — load `commit`
 Stage the intended files, commit with a Conventional Commit title. Rebase onto
 the upstream default branch if needed (stop and escalate on non-trivial
-conflicts). Push with `git push origin HEAD` to your `mvalipour/*` branch.
+conflicts). Push with `git push origin HEAD` to your own feature branch.
 Autonomous in v1 (no confirm gate).
 
 ### 6. pr — load `pull-requests`
 Open a **draft** PR: clear title, body summarizing what changed and why, reuse
 the repo template if present. Report it via `ship_stage("pr", "done", note, pr_url=<url>)` — repo/number are
-extracted from the URL. Autonomous in v1. If Olympus → dual-PR
-`ship_decision_required` instead. Artifact: `pr-body.md`. Completing the `pr`
+extracted from the URL. Autonomous in v1. If the repo needs a non-standard
+multi-PR release flow, escalate via `ship_decision_required` instead. Artifact:
+`pr-body.md`. Completing the `pr`
 stage marks the transition into monitoring; the extension arms the first CI
 cycle.
 
@@ -164,4 +166,4 @@ checks are green, review is approved, and nothing is unresolved.
 - Leaving a stage note stale (not calling `ship_stage` on transition)
 - Auto-doing design-level work instead of escalating
 - Pushing without local validation, or to a branch you don't own
-- Posting a reply without the `🤖 **<Model>**:` attribution
+- Posting a reply that ignores the repo's comment/attribution conventions

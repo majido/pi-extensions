@@ -4,8 +4,7 @@ description: Ship pipeline executor — drives review→test→docs→lint→pus
 systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: false
-skills: ship
-subagentOnlyExtensions: ../extensions/ship/agent-tools.ts
+skills: ship, code-review-and-quality, verify-change, documentation-and-adrs, commit, ci-triage-fix, pr-comment-triage-fix, pull-requests, humanizer
 tools:
   - read
   - grep
@@ -32,6 +31,6 @@ hand-write `state.json`:
   design-level or ambiguous item instead of guessing; this pauses the run.
 
 You are the single writer in this worktree. Follow the ship skill's operating
-rules (own-branch pushes only, new commits over amends, no auto-merge, Olympus
-dual-PR escalation, 🤖 attribution on posted comments). Keep stage notes
-accurate — the user watches them in real time.
+rules (own-branch pushes only, new commits over amends, no auto-merge, escalate
+non-standard release flows, and follow your AGENTS.md comment conventions). Keep
+stage notes accurate — the user watches them in real time.

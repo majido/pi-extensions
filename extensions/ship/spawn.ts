@@ -3,9 +3,11 @@
  * pi-subagents in-process RPC event bus (documented v1 contract). We capture
  * the asyncId from the reply so the extension can steer/inspect the live run.
  *
- * The executor loads the `ship` skill, runs with forked context (inherits the
- * parent session's understanding of the change for the FIRST spawn), and is the
- * single writer in the worktree.
+ * The executor loads the `ship` skill and is the single writer in the worktree.
+ * Context defaults to "fresh": forking the parent session mid-turn is fragile
+ * (persistence/leaf conditions, thinking-block stripping) and the executor
+ * reconstructs everything it needs from the git diff + skill, so fresh is the
+ * robust default. `context: "fork"` remains available for callers that want it.
  */
 
 const RPC_REQUEST_EVENT = "subagents:rpc:v1:request";
@@ -23,7 +25,7 @@ export interface SpawnPipelineParams {
   stages: string[];
   /** User steering / kickoff notes to seed the first run. */
   instructions?: string[];
-  /** "fork" for the first spawn (context-rich); "fresh" for later cycles. */
+  /** Defaults to "fresh" (robust). "fork" is opt-in and can fail mid-turn. */
   context?: "fork" | "fresh";
 }
 
@@ -117,7 +119,7 @@ export function spawnPipeline(
       params: {
         agent: "ship",
         task: buildTask(params),
-        context: params.context ?? "fork",
+        context: params.context ?? "fresh",
         async: true,
         cwd: params.cwd,
       },

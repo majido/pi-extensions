@@ -41,6 +41,10 @@ export type RunStatus =
 /** Stages that are ongoing PR monitoring rather than the linear pipeline. */
 export const MONITORING_STAGES = new Set(["ci", "comments"]);
 
+/** Statuses where the executor may still be doing work (a new run should not
+ * clobber it). Terminal statuses (done/aborted/failed) are supersedable. */
+export const LIVE_STATUSES = new Set<RunStatus>(["running", "paused", "waiting-ci"]);
+
 export interface StageState {
   id: string;
   status: StageStatus;
@@ -85,6 +89,15 @@ export interface ShipState {
   seenReviewIds?: string[];
   startedAt: string;
   title?: string;
+  /** Set when the run failed to start or run (e.g. spawn error). */
+  error?: string;
+}
+
+/** True when a run is in a live status AND its executor is actually running.
+ * Terminal or dead-executor runs return false, so they can be superseded. */
+export function runIsLive(state: ShipState): boolean {
+  if (!LIVE_STATUSES.has(state.status)) return false;
+  return executorIsLive(state);
 }
 
 export const DEFAULT_STAGES: string[] = [

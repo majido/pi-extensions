@@ -15,6 +15,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { footerLine, textStatus } from "./render.ts";
 import { ShipOverlay, type OverlayAction } from "./overlay.ts";
+import { registerShipTools } from "./agent-tools.ts";
 import { interruptRun, spawnPipeline } from "./spawn.ts";
 import {
   DEFAULT_STAGES,
@@ -24,6 +25,7 @@ import {
   readState,
   readCurrentRunId,
   runDir,
+  runIsLive,
   setCurrentPointer,
   writeState,
   type ShipState,
@@ -94,6 +96,20 @@ function resolveStages(opts: {
 }
 
 export default function (pi: ExtensionAPI) {
+  // Dual role, one discovered extension:
+  //  - Inside the ship executor child (PI_SUBAGENT_CHILD_AGENT === "ship"),
+  //    register only the ship_* progress tools. This is how the executor gets
+  //    them — no subagentOnlyExtensions path (which resolves against the child
+  //    cwd and isn't portable). Nothing leaks into the parent or other agents.
+  //  - Otherwise (the interactive parent), register commands/footer/lifecycle.
+  if (
+    process.env.PI_SUBAGENT_CHILD === "1" &&
+    process.env.PI_SUBAGENT_CHILD_AGENT === "ship"
+  ) {
+    registerShipTools(pi);
+    return;
+  }
+
   let timer: ReturnType<typeof setInterval> | undefined;
   let savedCtx: any;
 
@@ -151,10 +167,12 @@ export default function (pi: ExtensionAPI) {
     const action = await ctx.ui.custom<OverlayAction>(
       (tui: any, theme: any, _kb: any, done: (a: OverlayAction) => void) => {
         const comp = new ShipOverlay(cwd, theme, tui, done);
+        // 80ms cadence matches pi's working spinner; each tick advances the
+        // animation and re-reads state.json (live stage updates).
         const iv = setInterval(() => {
-          comp.invalidate();
+          comp.tick();
           tui.requestRender();
-        }, 2000);
+        }, 80);
         (iv as { unref?: () => void }).unref?.();
         comp.onClose = () => clearInterval(iv);
         return {
@@ -182,24 +200,27 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // Abort the active run: confirm, interrupt the executor, mark aborted.
+  // Abort/clear the active run. A live run is confirmed + interrupted; a
+  // terminal or dead-executor run is cleared without ceremony.
   const abortRun = async (ctx: any): Promise<void> => {
     const cwd = ctxCwd(ctx);
     const runId = cwd ? readCurrentRunId(cwd) : undefined;
     const state = cwd && runId ? readState(cwd, runId) : undefined;
     if (!state) {
-      ctx.ui.notify("ship: no active run to abort", "info");
+      ctx.ui.notify("ship: no active run to clear", "info");
       return;
     }
-    const ok = await ctx.ui.confirm("Abort ship run?", `Stop ${state.runId}?`);
-    if (!ok) return;
-    const events = getEvents(pi);
-    if (events && state.currentRun?.asyncId) interruptRun(events, state.currentRun.asyncId);
+    if (runIsLive(state)) {
+      const ok = await ctx.ui.confirm("Abort ship run?", `Stop ${state.runId}?`);
+      if (!ok) return;
+      const events = getEvents(pi);
+      if (events && state.currentRun?.asyncId) interruptRun(events, state.currentRun.asyncId);
+    }
     state.status = "aborted";
     writeState(state);
     setCurrentPointer(cwd!, undefined);
     renderFooter(ctx);
-    ctx.ui.notify(`ship: aborted ${state.runId}`, "info");
+    ctx.ui.notify(`ship: cleared ${state.runId}`, "info");
   };
 
   // ---- /ship ----------------------------------------------------------------
@@ -212,10 +233,13 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("ship: no working directory for this session", "error");
         return;
       }
+      // Only a genuinely live run (live status + running executor) blocks a new
+      // one. Terminal or dead-executor runs are superseded automatically
+      // (createRun overwrites the pointer), so a failed run never gets stuck.
       const existing = readActiveState(cwd);
-      if (existing && existing.status !== "done" && existing.status !== "aborted") {
+      if (existing && runIsLive(existing)) {
         ctx.ui.notify(
-          `ship: a run is already active (${existing.runId}). /ship-abort first or /ship-status.`,
+          `ship: a run is already active (${existing.runId}). /ship-abort first or Ctrl+S to watch.`,
           "warning",
         );
         return;
@@ -259,11 +283,11 @@ export default function (pi: ExtensionAPI) {
         runId: state.runId,
         stateDir: runDir(cwd, state.runId),
         stages,
-        context: "fork",
       });
 
       if (result.error) {
         state.status = "failed";
+        state.error = result.error;
         writeState(state);
         renderFooter(ctx);
         ctx.ui.notify(`ship: spawn failed — ${result.error}`, "error");
@@ -277,9 +301,11 @@ export default function (pi: ExtensionAPI) {
       };
       writeState(state);
       ctx.ui.notify(
-        `ship: executor running${result.asyncId ? ` [${result.asyncId.slice(0, 8)}]` : ""}. Ctrl+S or /ship-status to watch.`,
+        `ship: executor running${result.asyncId ? ` [${result.asyncId.slice(0, 8)}]` : ""}.`,
         "info",
       );
+      // Auto-open the status panel (TUI); falls back to a text summary elsewhere.
+      await openOverlay(ctx);
     },
   });
 

@@ -20,9 +20,9 @@ code (not the tests) where it doesn't. For test-first development use
 
 - The current diff (`git diff`, `git diff --cached`, or against the base branch:
   `git diff origin/main...HEAD`).
-- The project's test/build/lint commands (read `package.json` / `AGENTS.md`:
-  pnpm scripts, `uv run pytest`, `sbt --client "scalafmtAll; test"`,
-  `bazelisk test`, etc.).
+- The project's test/build/lint commands (discover them from `package.json`
+  scripts, `AGENTS.md`, a Makefile, or the CI config — use whatever that
+  ecosystem uses).
 
 ## 1. Coverage audit
 
@@ -50,8 +50,8 @@ pipeline surfaces this as the stage one-liner).
 ## 3. Run the floor
 
 Run the project's full configured verification command (the non-negotiable
-gate). In Scala/SBT repos prepend `scalafmtAll` in the same sbt invocation
-(`sbt --client "scalafmtAll; test"`).
+gate). If the project expects formatting/pre-commit to run with the tests,
+include it in the same invocation (format-then-test).
 
 ## 4. Fix loop
 

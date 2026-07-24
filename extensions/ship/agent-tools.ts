@@ -1,12 +1,15 @@
 /**
- * ship agent tools — loaded ONLY inside the ship executor's child session
- * (via the ship agent's `subagentOnlyExtensions`). These let the executor
- * report progress by CALLING a tool instead of hand-writing state.json. The
- * tool handler owns the write, so state.json is always well-formed and
- * consistent — we never depend on the agent to serialize JSON correctly.
+ * ship agent tools — the executor reports progress by CALLING a tool instead
+ * of hand-writing state.json. The tool handler owns the write, so state.json is
+ * always well-formed and consistent — we never depend on the agent to serialize
+ * JSON correctly. The parent extension separately reconciles run liveness from
+ * the runtime's status.json, so a forgotten final transition can't make the
+ * footer lie.
  *
- * The parent extension separately reconciles run liveness from the runtime's
- * status.json, so even a forgotten final transition can't make the footer lie.
+ * These tools are registered ONLY inside the ship executor child session — the
+ * package's main extension (index.ts) self-gates on `PI_SUBAGENT_CHILD_AGENT`
+ * and calls `registerShipTools` there, so nothing here leaks into the parent or
+ * other subagents. No file paths involved (portable across install locations).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -30,7 +33,8 @@ function parsePrUrl(url: string): { repo?: string; number?: number; url: string 
   return m ? { repo: m[1], number: Number(m[2]), url } : { url };
 }
 
-export default function (pi: ExtensionAPI) {
+/** Register ship_stage + ship_decision_required on the given API. */
+export function registerShipTools(pi: ExtensionAPI) {
   // ---- ship_stage: transition a pipeline stage --------------------------
   pi.registerTool({
     name: "ship_stage",
@@ -116,6 +120,9 @@ export default function (pi: ExtensionAPI) {
     },
   });
 }
+
+// Default export lets `pi -e agent-tools.ts` load the tools standalone (tests).
+export default registerShipTools;
 
 function okText(text: string) {
   return { content: [{ type: "text" as const, text }], details: {} };

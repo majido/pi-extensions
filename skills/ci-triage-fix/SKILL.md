@@ -12,9 +12,8 @@ and always re-validate before pushing.
 ## Inputs you need
 
 - `repo` (`owner/repo`) and PR number (or current branch's PR).
-- The branch you own and may push to. **Only push to branches you own**
-  (e.g. `mvalipour/*`); never force-push, never rewrite pushed history,
-  never auto-merge.
+- The branch you own and may push to. **Only push to a branch you own**;
+  never force-push, never rewrite pushed history, never auto-merge.
 
 ## 1. Fetch current check state
 
@@ -27,7 +26,7 @@ For a failing check, get the detail:
 
 ```bash
 gh run view <run-id> --log-failed          # GitHub Actions
-# or open the check details URL for non-Actions checks (Atlantis, Harness, etc.)
+# or open the check details URL for non-Actions checks (your CI provider)
 ```
 
 ## 2. Dedup (when running in a monitor loop)
@@ -41,7 +40,7 @@ not new activity — do not act on them.
 
 **Straightforward — fix autonomously:**
 
-- Lint / formatting (scalafmt, ruff, prettier, eslint, buildifier)
+- Lint / formatting (any formatter — e.g. prettier, eslint, ruff, gofmt, rustfmt)
 - Type errors with an obvious fix (missing import, wrong signature, null guard)
 - Obvious test failures (off-by-one, stale assertion, wrong fixture)
 - Snapshot / golden-file updates that are clearly correct
@@ -63,9 +62,9 @@ tradeoff, and a suggested option. Then stop acting on that item.
 For each straightforward failure:
 
 1. Make the minimal fix in source.
-2. Validate locally with the project's own build/test/lint (read
-   `package.json` / `AGENTS.md`: pnpm scripts, `uv run ruff … && uv run pytest`,
-   `sbt --client "scalafmtAll; test"`, `bazelisk`, etc.).
+2. Validate locally with the project's own build/test/lint commands (discover
+   them from `package.json` scripts, `AGENTS.md`, Makefile, or the CI config —
+   use whatever that ecosystem uses).
 3. If validation fails, iterate — do not push broken code.
 4. Commit as a **new commit** (Conventional Commit title; use the `commit`
    skill) and push to your branch (`git push origin HEAD`).

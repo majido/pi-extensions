@@ -9,7 +9,13 @@
  * returned to the caller via done() so dialog/confirm flows happen outside.
  */
 
-import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+  hyperlink,
+  matchesKey,
+  truncateToWidth,
+  visibleWidth,
+  wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -25,14 +31,17 @@ export type OverlayAction = { kind: "close" } | { kind: "steer" } | { kind: "abo
 type ThemeLike = {
   fg: (color: string, text: string) => string;
   bold: (text: string) => string;
+  underline?: (text: string) => string;
 };
 
+// pi's default working spinner (braille), 80ms cadence.
+const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 const GLYPH: Record<string, string> = {
-  done: "✓",
-  running: "●",
-  failed: "✗",
-  skipped: "⊘",
-  pending: "○",
+  done: "✓", // checkmark — passed
+  failed: "●", // red circle — failed
+  skipped: "⊘", // skipped
+  pending: "○", // empty circle — not started
 };
 // Theme palette colors (theme-safe). accent reads as the active/blue highlight
 // and is distinct from the green `success`; pending is faint gray.
@@ -42,6 +51,14 @@ const COLOR: Record<string, string> = {
   failed: "error", // red
   skipped: "muted", // gray
   pending: "dim", // light gray — not started
+};
+const STATUS_COLOR: Record<string, string> = {
+  running: "accent",
+  "waiting-ci": "accent",
+  paused: "warning",
+  done: "success",
+  failed: "error",
+  aborted: "muted",
 };
 
 function duration(s: StageState): string {
@@ -62,12 +79,71 @@ export class ShipOverlay {
   private artifactLines: string[] = [];
   private artifactTitle = "";
 
+  private frame = 0;
+
   constructor(
     private cwd: string,
     private theme: ThemeLike,
     private tui: { requestRender: () => void },
     private done: (a: OverlayAction) => void,
   ) {}
+
+  /** Advance the spinner (called by the overlay's animation interval). */
+  tick(): void {
+    this.frame = (this.frame + 1) % 100000;
+  }
+
+  private spinner(): string {
+    return FRAMES[this.frame % FRAMES.length];
+  }
+
+  /** Leading indicator for the whole run: spinner while active, else a glyph. */
+  private runIndicator(st: ShipState): string {
+    const t = this.theme;
+    switch (st.status) {
+      case "running":
+      case "waiting-ci":
+        return t.fg("accent", this.spinner());
+      case "done":
+        return t.fg("success", "✓");
+      case "failed":
+        return t.fg("error", "✗");
+      case "aborted":
+        return t.fg("muted", "⊘");
+      case "paused":
+        return t.fg("warning", "⏸");
+      default:
+        return t.fg("muted", "•");
+    }
+  }
+
+  private stageGlyph(status: string): string {
+    const t = this.theme;
+    if (status === "running") return t.fg("accent", this.spinner());
+    return t.fg(COLOR[status] ?? "muted", GLYPH[status] ?? "?");
+  }
+
+  /** Short, clickable PR label: "<repo> PR#<n>" via OSC-8 hyperlink. */
+  private prLink(st: ShipState, maxWidth: number): string | undefined {
+    const url = st.pr?.url;
+    if (!url) return undefined;
+    let repoShort = st.pr?.repo?.split("/").pop();
+    let num = st.pr?.number;
+    if (!repoShort || !num) {
+      const m = url.match(/github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/);
+      if (m) {
+        repoShort ??= m[1];
+        num ??= Number(m[2]);
+      }
+    }
+    let text = `${repoShort ?? "PR"}${num ? ` PR#${num}` : ""}`;
+    if (visibleWidth(text) > maxWidth) text = num ? `PR#${num}` : "PR";
+    const t = this.theme;
+    const styled = t.underline
+      ? t.underline(t.fg("mdLink", text))
+      : t.fg("mdLink", text);
+    return hyperlink(styled, url);
+  }
 
   private state(): ShipState | undefined {
     const raw = readActiveState(this.cwd);
@@ -130,23 +206,28 @@ export class ShipOverlay {
 
   render(width: number): string[] {
     const st = this.state();
-    if (!st) return this.frame(["no active run"], width, "ship");
+    if (!st) return this.boxed(["no active run"], width, "ship");
     const inner = Math.max(12, width - 4);
     if (this.mode === "artifact") {
-      return this.frame(this.artifactBody(inner), width, this.artifactTitle);
+      return this.boxed(this.artifactBody(inner), width, this.artifactTitle);
     }
-    return this.frame(this.listBody(st, inner), width, `ship: ${st.title ?? st.runId}`);
+    return this.boxed(this.listBody(st, inner), width, `ship · ${st.runId}`);
   }
 
   private listBody(st: ShipState, inner: number): string[] {
     const t = this.theme;
     const lines: string[] = [];
-    lines.push(t.fg("dim", truncateToWidth(`status: ${st.status}`, inner)));
+
+    // Header line: <status animation> <status text> - <linked PR>
+    const indicator = this.runIndicator(st);
+    const statusText = t.fg(STATUS_COLOR[st.status] ?? "muted", st.status);
+    const link = this.prLink(st, inner - visibleWidth(st.status) - 5);
+    lines.push(`${indicator} ${statusText}${link ? `${t.fg("dim", " - ")}${link}` : ""}`);
     lines.push("");
 
     st.stages.forEach((s, i) => {
       const color = COLOR[s.status] ?? "muted";
-      const glyph = t.fg(color, GLYPH[s.status] ?? "?");
+      const glyph = this.stageGlyph(s.status);
       const nameRaw = s.id.padEnd(9);
       const name = s.status === "running" ? t.fg(color, t.bold(nameRaw)) : t.fg(color, nameRaw);
       const meta = [s.model, duration(s)].filter(Boolean).join(" ");
@@ -171,11 +252,6 @@ export class ShipOverlay {
       lines.push(truncateToWidth(t.fg("error", `error: ${st.error}`), inner));
     }
 
-    if (st.pr?.url) {
-      lines.push("");
-      lines.push(truncateToWidth(t.fg("mdLink", `PR: ${st.pr.url}`), inner));
-    }
-
     lines.push("");
     lines.push(t.fg("dim", truncateToWidth("↑↓ stage · enter artifact · s steer · a abort · esc close", inner)));
     return lines;
@@ -197,12 +273,12 @@ export class ShipOverlay {
   }
 
   /** Wrap body lines in a rounded border with a 🚀 title in the top edge. */
-  private frame(body: string[], width: number, title: string): string[] {
+  private boxed(body: string[], width: number, title: string): string[] {
     const t = this.theme;
     const b = (s: string) => t.fg("borderAccent", s);
     const inner = Math.max(12, width - 4);
 
-    const titleText = `🚀 ${title}`;
+    const titleText = truncateToWidth(`🚀 ${title}`, Math.max(4, width - 6));
     const head = `╭─ ${titleText} `;
     const used = visibleWidth(head); // ╭─ + space + title + space
     const fill = Math.max(0, width - used - 1); // -1 for the closing ╮

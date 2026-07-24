@@ -60,15 +60,15 @@ For each clear win:
 1. Make the minimal change.
 2. Validate with the project's build/test/lint.
 3. Commit (new commit, Conventional Commit title, `commit` skill) and push.
-4. Reply to the thread noting it's addressed. **Every reply MUST start with the
-   agent attribution prefix** `🤖 **<Model>**: ` (use a short model name —
-   `Claude`, `GPT`, `Gemini`). Example:
-   `🤖 **Claude**: good catch — fixed in abc123.`
+4. Reply to the thread noting it's addressed. If your `AGENTS.md` defines a
+   comment-attribution convention (e.g. an agent/model prefix so humans know a
+   reply is agent-written), follow it. Example reply:
+   `good catch — fixed in abc123.`
 
    Reply to an inline thread:
    ```bash
    gh api repos/<repo>/pulls/<pr>/comments/<comment-id>/replies \
-     -f body='🤖 **Claude**: good catch — fixed in abc123.'
+     -f body='good catch — fixed in abc123.'
    ```
 
 Never apply every suggestion blindly. Batch related fixes into coherent commits
@@ -81,7 +81,7 @@ that it's escalated. List `needsDecision` items separately.
 
 ## Red flags
 
-- Replying without the `🤖 **<Model>**:` attribution prefix
+- Ignoring your repo's comment-attribution convention on posted replies
 - Auto-complying with a design-level request to avoid escalating
 - Pushing fixes without local validation
 - One noisy commit per trivial comment instead of batching
