@@ -339,7 +339,7 @@ export default function (pi: ExtensionAPI) {
       const existing = readActiveState(cwd);
       if (existing && (cycleSpawns.has(existing.runId) || runIsLive(existing))) {
         ctx.ui.notify(
-          `ship: a run is already active (${existing.runId}). /ship-abort first or Ctrl+S to watch.`,
+          `ship: a run is already active (${existing.runId}). /ship-abort first or Ctrl+Shift+S to watch.`,
           "warning",
         );
         return;
@@ -489,8 +489,8 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ---- Ctrl+S opens the status panel ----------------------------------------
-  pi.registerShortcut?.("ctrl+s", {
+  // ---- Ctrl+Shift+S opens the status panel ----------------------------------------
+  pi.registerShortcut?.("ctrl+shift+s", {
     description: "Open ship pipeline status panel",
     handler: async (ctx: any) => {
       await openOverlay(ctx);
@@ -512,7 +512,7 @@ export default function (pi: ExtensionAPI) {
       const state = readActiveState(cwd);
       if (state && state.status !== "done" && state.status !== "aborted") {
         ctx.ui.notify(
-          `ship run active for this worktree (${state.stage ?? "…"}) — Ctrl+S to view`,
+          `ship run active for this worktree (${state.stage ?? "…"}) — Ctrl+Shift+S to view`,
           "info",
         );
         // Catch-up-on-attach: a prior session's schedule may have died with

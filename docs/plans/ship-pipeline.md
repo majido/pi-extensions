@@ -264,8 +264,8 @@ Any pi session started in the worktree discovers the run via
 `<cwd>/.pi/ship/current.json` on `session_start`:
 
 - Footer status appears immediately; one-time notify:
-  `ship run active — ctrl+s to view`.
-- `pi.registerShortcut("ctrl+s")` opens the overlay.
+  `ship run active — ctrl+shift+s to view`.
+- `pi.registerShortcut("ctrl+shift+s")` opens the overlay.
 - **Catch-up-on-attach**: if `ci.nextCheckAt` is in the past and no live run is
   recorded, this session fires a catch-up cycle immediately and becomes the
   scheduler (its `schedule_prompt` session-scoped jobs drive subsequent
@@ -294,7 +294,7 @@ Any pi session started in the worktree discovers the run via
    - Reliability hardening: extension-owned `ship_stage`/`ship_decision_required`
      tools (agent calls, handler writes) + runtime-liveness reconciliation from
      `status.json` so the footer never shows a phantom "running". **done.**
-   - Status overlay panel (`/ship-status`, `Ctrl+S`): per-stage rows (glyph,
+   - Status overlay panel (`/ship-status`, `Ctrl+Shift+S`): per-stage rows (glyph,
      model, duration, one-liner), decisions, PR link, artifact viewer; keys
      `↑↓/enter/s/a/esc`. **done.**
 4. **v2 (next):** push/pr + Phase 2 cycles (schedule_prompt wiring, backoff,

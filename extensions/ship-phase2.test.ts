@@ -47,10 +47,11 @@ function state(cwd: string, status: ShipState["status"] = "waiting-ci"): ShipSta
 test("scheduled marker activates ship tools only in an in-memory subagent", async () => {
   const tools: string[] = [];
   const definitions: any[] = [];
+  const shortcuts: string[] = [];
   const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
   const pi = {
     registerCommand: () => {},
-    registerShortcut: () => {},
+    registerShortcut: (shortcut: string) => shortcuts.push(shortcut),
     registerTool: (tool: { name: string }) => {
       tools.push(tool.name);
       definitions.push(tool);
@@ -59,6 +60,7 @@ test("scheduled marker activates ship tools only in an in-memory subagent", asyn
     events: { emit: () => {} },
   } as any;
   shipExtension(pi);
+  assert.deepEqual(shortcuts, ["ctrl+shift+s"]);
   await handlers.get("before_agent_start")?.(
     { prompt: "SHIP_SCHEDULED_CYCLE run-1" },
     { sessionManager: { isPersisted: () => false } },
