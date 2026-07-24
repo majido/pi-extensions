@@ -106,11 +106,18 @@ intended behavior, run targeted suites, then the floor `verify` command. Fix
 matter and add/adjust them. Artifact: `test.md` (what you picked and why).
 
 ### 3. docs — load `documentation-and-adrs` (+ `repo-wiki` if the repo has one)
-QA this PR's documentation surface: (a) update docs the diff made stale
-(README, wiki pages, code comments); (b) review docs **added** in this PR (ADRs,
-wiki pages, doc comments) for accuracy and quality; (c) flag a missing ADR/wiki
-page — write it if clear-cut, else `needsDecision`. Then run new/updated prose
-through the `humanizer` skill's heuristics before finishing. Artifact: `docs.md`.
+QA this PR's documentation surface: (a) update live docs the diff made stale
+(README, current design docs, wiki pages, runbooks, API docs, and code
+comments); (b) review docs **added** in this PR (ADRs, wiki pages, doc
+comments) for accuracy and quality; (c) flag a missing ADR/wiki page — write
+it if clear-cut, else `needsDecision`. Historical artifacts such as
+implementation plans, changelogs, and ADRs are records of past decisions: do
+not rewrite them or add a superseded banner merely because the implementation
+has evolved. If a historical decision needs to be revisited, add a new record
+that references it. For live documents, rewrite the stale content to describe
+the current contract rather than labeling the whole document obsolete. Then
+run new/updated prose through the `humanizer` skill's heuristics before
+finishing. Artifact: `docs.md`.
 
 ### 4. lint — verify command only (no skill)
 Run the project's lint/format. Apply **mechanical** fixes only. Anything a
