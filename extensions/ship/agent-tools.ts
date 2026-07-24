@@ -6,14 +6,13 @@
  * the runtime's status.json, so a forgotten final transition can't make the
  * footer lie.
  *
- * These tools are registered ONLY inside the ship executor child session — the
- * package's main extension (index.ts) self-gates on `PI_SUBAGENT_CHILD_AGENT`
- * and calls `registerShipTools` there, so nothing here leaks into the parent or
- * other subagents. No file paths involved (portable across install locations).
+ * These tools are registered inside the ship executor child or the narrowly
+ * identified in-memory scheduled subagent. The package's main extension
+ * self-gates those contexts, so tools do not leak into normal parent sessions.
+ * No file paths are embedded here (portable across install locations).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
   appendJournal,
@@ -22,6 +21,9 @@ import {
   type ShipState,
   type StageStatus,
 } from "./state.ts";
+import { registerRun } from "./global-index.ts";
+
+const registeredApis = new WeakSet<object>();
 
 function loadState(cwd: string): ShipState | undefined {
   return readActiveState(cwd);
@@ -33,8 +35,11 @@ function parsePrUrl(url: string): { repo?: string; number?: number; url: string 
   return m ? { repo: m[1], number: Number(m[2]), url } : { url };
 }
 
-/** Register ship_stage + ship_decision_required on the given API. */
+/** Register the ship progress and cycle tools on the given API. */
 export function registerShipTools(pi: ExtensionAPI) {
+  if (registeredApis.has(pi as object)) return;
+  registeredApis.add(pi as object);
+
   // ---- ship_stage: transition a pipeline stage --------------------------
   pi.registerTool({
     name: "ship_stage",
@@ -45,7 +50,12 @@ export function registerShipTools(pi: ExtensionAPI) {
       "Report ship stage transitions via ship_stage(stage,status,note) instead of writing state.json.",
     parameters: Type.Object({
       stage: Type.String({ description: "Stage id: review|test|docs|lint|push|pr|ci|comments" }),
-      status: StringEnum(["running", "done", "failed", "skipped"] as const),
+      status: Type.Union([
+        Type.Literal("running"),
+        Type.Literal("done"),
+        Type.Literal("failed"),
+        Type.Literal("skipped"),
+      ]),
       note: Type.Optional(
         Type.String({ description: "Short one-liner shown to the user" }),
       ),
@@ -64,6 +74,9 @@ export function registerShipTools(pi: ExtensionAPI) {
 
       const stage = state.stages.find((s) => s.id === params.stage);
       if (!stage) return errText(`unknown stage '${params.stage}'`);
+      if (params.stage === "pr" && params.status === "done" && !params.pr_url) {
+        return errText("pr_url is required when completing the pr stage");
+      }
 
       stage.status = params.status as StageStatus;
       if (params.note !== undefined) stage.note = params.note;
@@ -78,6 +91,32 @@ export function registerShipTools(pi: ExtensionAPI) {
       if (params.pr_url) {
         state.pr = { ...(state.pr ?? {}), ...parsePrUrl(params.pr_url) };
       }
+
+      if (params.status === "running") {
+        state.status = "running";
+      } else if (params.status === "failed") {
+        state.status = "failed";
+      } else if (params.status === "done" || params.status === "skipped") {
+        const allDone = state.stages.every(
+          (s) => s.status === "done" || s.status === "skipped",
+        );
+        const prDone = state.stages.find((s) => s.id === "pr")?.status === "done";
+        const hasMonitoring = state.stages.some((s) => s.id === "ci" || s.id === "comments");
+        const monitoringPending = state.stages.some(
+          (s) => (s.id === "ci" || s.id === "comments") && s.status === "pending",
+        );
+        if (allDone && prDone && hasMonitoring) {
+          state.status = "waiting-ci";
+          state.ci ??= { intervalMin: 1, cycles: 0, checkConclusions: {} };
+          state.ci.nextCheckAt ??= new Date(Date.now() + 60_000).toISOString();
+        } else if (allDone) {
+          state.status = "done";
+        } else if (prDone && hasMonitoring && monitoringPending) {
+          state.status = "waiting-ci";
+          state.ci ??= { intervalMin: 1, cycles: 0, checkConclusions: {} };
+          state.ci.nextCheckAt ??= new Date(Date.now() + 60_000).toISOString();
+        }
+      }
       writeState(state);
       appendJournal(
         cwd,
@@ -87,6 +126,54 @@ export function registerShipTools(pi: ExtensionAPI) {
       return okText(
         `ship_stage: ${params.stage} → ${params.status}${state.pr?.number ? ` (PR #${state.pr.number})` : ""}`,
       );
+    },
+  });
+
+  // ---- ship_cycle: persist fresh-cycle bookkeeping -----------------------
+  pi.registerTool({
+    name: "ship_cycle",
+    label: "Ship Cycle",
+    description:
+      "Record CI/comments cycle counters, backoff, schedule identity, and terminal state. Use after one fresh monitoring cycle; never hand-write state.json.",
+    promptSnippet:
+      "Record ship cycle metadata via ship_cycle after each CI/comments monitoring cycle.",
+    parameters: Type.Object({
+      cycles: Type.Optional(Type.Integer({ minimum: 0, description: "Completed cycle count" })),
+      interval_min: Type.Optional(Type.Integer({ minimum: 1, maximum: 60, description: "Backoff interval in minutes" })),
+      next_check_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      schedule_job_id: Type.Optional(Type.String()),
+      schedule_job_name: Type.Optional(Type.String()),
+      status: Type.Optional(
+        Type.Union([
+          Type.Literal("waiting-ci"),
+          Type.Literal("done"),
+          Type.Literal("paused"),
+          Type.Literal("failed"),
+        ]),
+      ),
+      note: Type.Optional(Type.String({ description: "Continuity note for journal.md" })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const state = loadState(ctx.cwd);
+      if (!state) return errText("no active ship run in this worktree");
+      state.ci = {
+        ...(state.ci ?? {}),
+        ...(params.cycles === undefined ? {} : { cycles: params.cycles }),
+        ...(params.interval_min === undefined ? {} : { intervalMin: params.interval_min }),
+        ...(params.next_check_at === undefined ? {} : { nextCheckAt: params.next_check_at }),
+        ...(params.schedule_job_id === undefined ? {} : { scheduleJobId: params.schedule_job_id }),
+        ...(params.schedule_job_name === undefined ? {} : { scheduleJobName: params.schedule_job_name }),
+        lastActivityAt: new Date().toISOString(),
+      };
+      if (params.status) state.status = params.status;
+      writeState(state);
+      registerRun(state);
+      appendJournal(
+        ctx.cwd,
+        state.runId,
+        `cycle ${state.ci.cycles ?? 0}${params.note ? ` — ${params.note}` : ""}${params.next_check_at ? `; next ${params.next_check_at}` : ""}`,
+      );
+      return okText(`ship_cycle recorded (${state.ci.cycles ?? 0})`);
     },
   });
 
@@ -114,6 +201,7 @@ export function registerShipTools(pi: ExtensionAPI) {
         suggestion: params.suggestion,
       });
       state.status = "paused";
+      if (state.ci) state.ci.nextCheckAt = null;
       writeState(state);
       appendJournal(ctx.cwd, state.runId, `needsDecision [${params.stage}]: ${params.what}`);
       return okText(`ship_decision_required recorded; run paused (${state.needsDecision.length} pending)`);

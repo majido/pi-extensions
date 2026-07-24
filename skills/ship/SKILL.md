@@ -20,11 +20,13 @@ Ship uses **fresh runs per cycle**, not one long-lived session. There are two
 phases:
 
 - **Phase 1 — pipeline** (`review → test → docs → lint → push → pr`): one run,
-  start to finish. No pausing except to escalate a decision.
+  start to finish. No pausing except to escalate a decision. When `pr` is done,
+  stop this executor; never run `ci` or `comments` in the same process.
 - **Phase 2 — monitoring** (`ci`, `comments`): one **fresh** run per cycle. Each
   cycle you reconstruct context from `state.json` + `journal.md` + `git`/`gh`,
-  do exactly one cycle of work, update state, and reschedule the next cycle (the
-  ship extension arms it). Assume **zero** memory carried between cycles.
+  do exactly one cycle of work, update state through `ship_stage` and
+  `ship_cycle`, and reschedule the next cycle with `schedule_prompt` in
+  subagent/model mode. Assume **zero** memory carried between cycles.
 
 Because a later cycle is a fresh session, **write down anything the next cycle
 needs**: append to `journal.md` and keep `state.json` accurate. Never assume you
@@ -45,6 +47,9 @@ accurate:
   footer reflects exactly what you last reported.
 - **`ship_decision_required(stage, what, tradeoff?, suggestion?)`** — escalate a
   design-level/ambiguous item; records it and pauses the run.
+- **`ship_cycle(cycles?, interval_min?, next_check_at?, schedule_job_id?,
+  schedule_job_name?, status?, note?)`** — record monitoring counters, backoff,
+  schedule identity, and terminal/waiting state after one fresh cycle.
 - On the **`pr`** stage, pass **`pr_url`** to `ship_stage` when the PR is open
   (repo + number are auto-extracted). There is no separate phase to set — the
   stage statuses are the source of truth for where the run is.
@@ -135,23 +140,31 @@ the repo template if present. Report it via `ship_stage("pr", "done", note, pr_u
 extracted from the URL. Autonomous in v1. If the repo needs a non-standard
 multi-PR release flow, escalate via `ship_decision_required` instead. Artifact:
 `pr-body.md`. Completing the `pr`
-stage marks the transition into monitoring; the extension arms the first CI
-cycle.
+stage hands off to monitoring. The extension records the first `+1m` due
+time. **Stop this executor here** and arm the first cycle with
+`schedule_prompt` in subagent/model mode. Include the literal
+`SHIP_SCHEDULED_CYCLE` marker in the prompt so the extension activates its
+state tools at fire time. Use a unique name such as `ship-<runId>-<cycle>`.
+Include the run id, `model`,
+`extensions: ["pi-extensions", "pi-schedule-prompt"]`, and the full stage
+`skills` list in the add call. After it returns, call `ship_cycle` with the job
+id/name and due time.
 
 ### 7. ci — load `ci-triage-fix` (Phase 2, per cycle)
 One cycle: fetch checks, dedup against `ci.checkConclusions`, fix straightforward
-failures (validate + new commit + push), escalate the rest. Update
-`ci.checkConclusions`, `ci.cycles`, and backoff (`intervalMin`: new activity → 1,
-else `min(interval*2, 60)`). Reschedule unless paused/stopped.
+failures (validate + new commit + push), escalate the rest. New activity sets
+`interval_min` to 1; no activity doubles it up to 60. Increment `cycles`, call
+`ship_cycle`, and reschedule one one-shot job unless paused/stopped.
 
 ### 8. comments — load `pr-comment-triage-fix` (Phase 2, per cycle)
 One cycle: fetch review activity, dedup against `seenCommentIds`/`seenReviewIds`,
 apply clear wins (validate + commit + push + attributed reply), escalate
-design-level ones. Update the seen sets.
+design-level ones. Update the seen sets through the cycle report.
 
 CI and comments run together each Phase-2 cycle. Stop conditions: PR merged or
-closed, or `ci.cycles >= 200`. Downgrade to idle (max 60m interval) when all
-checks are green, review is approved, and nothing is unresolved.
+closed, or `ci.cycles >= 200`; cancel the scheduled job before stopping. If
+all checks are green, review is approved, and nothing is unresolved, remain
+scheduled at the capped 60m interval.
 
 ## Per-run checklist
 

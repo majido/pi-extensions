@@ -8,15 +8,19 @@
  * single writer), renders progress from worktree-local state.json, and routes
  * steering. See docs/plans/ship-pipeline.md for the full design.
  *
- * v1 scope: /ship (Phase 1 stages), footer status, /ship-status (text),
- * /ship-steer (via instructions[]), /ship-abort, catch-up-on-attach.
+ * Scope: /ship (Phase 1 stages), footer/status overlays, steering/abort,
+ * Phase 2 fresh monitoring cycles, global fleet index, and catch-up-on-attach.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { footerLine, textStatus } from "./render.ts";
 import { ShipOverlay, type OverlayAction } from "./overlay.ts";
 import { registerShipTools } from "./agent-tools.ts";
 import { interruptRun, spawnPipeline } from "./spawn.ts";
+import { MAX_CYCLES } from "./cycle.ts";
+import { listFleet, registerRun, removeRun, sweepIndex } from "./global-index.ts";
+import { cancelScheduledJob } from "./schedule-store.ts";
 import {
   DEFAULT_STAGES,
   createRun,
@@ -27,6 +31,7 @@ import {
   runDir,
   runIsLive,
   setCurrentPointer,
+  tryClaimCycle,
   writeState,
   type ShipState,
 } from "./state.ts";
@@ -57,6 +62,21 @@ function ctxSessionFile(ctx: any): string | undefined {
     return ctx?.sessionManager?.getSessionFile?.();
   } catch {
     return undefined;
+  }
+}
+
+/** Scheduled model jobs use an in-memory session. The explicit prompt marker
+ * is the supported handoff signal; unlike process.env it is safe for concurrent
+ * in-process scheduled jobs. */
+function isScheduledCyclePrompt(prompt: unknown): boolean {
+  return typeof prompt === "string" && prompt.includes("SHIP_SCHEDULED_CYCLE");
+}
+
+function isInMemorySession(ctx: any): boolean {
+  try {
+    return ctx?.sessionManager?.isPersisted?.() === false;
+  } catch {
+    return false;
   }
 }
 
@@ -112,6 +132,7 @@ export default function (pi: ExtensionAPI) {
 
   let timer: ReturnType<typeof setInterval> | undefined;
   let savedCtx: any;
+  const cycleSpawns = new Set<string>();
 
   const renderFooter = (ctx: any) => {
     savedCtx = ctx;
@@ -121,6 +142,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     const raw = readActiveState(cwd);
+    sweepIndex(getEvents(pi));
     if (!raw || raw.status === "done" || raw.status === "aborted") {
       ctx.ui.setWidget(WIDGET_ID, undefined);
       return;
@@ -200,6 +222,81 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  const isMonitoringRun = (state: ShipState): boolean =>
+    Boolean(state.pr?.url && state.stages.some((s) => s.id === "ci" || s.id === "comments"));
+
+  const spawnCycle = async (ctx: any, state: ShipState): Promise<void> => {
+    const latest = readState(state.cwd, state.runId);
+    if (latest) state = latest;
+    if (!isMonitoringRun(state) || cycleSpawns.has(state.runId) || runIsLive(state)) return;
+    if ((state.ci?.cycles ?? 0) >= MAX_CYCLES) {
+      cancelScheduledJob(state.cwd, state.ci?.scheduleJobId, state.ci?.scheduleJobName);
+      state.status = "done";
+      state.ci = { ...(state.ci ?? {}), nextCheckAt: null };
+      writeState(state);
+      removeRun(state.runId, state.cwd);
+      return;
+    }
+
+    const events = getEvents(pi);
+    if (!events) return;
+    cycleSpawns.add(state.runId);
+    const claimed = tryClaimCycle(state.cwd, state.runId, ctxSessionFile(ctx));
+    if (!claimed) {
+      cycleSpawns.delete(state.runId);
+      return;
+    }
+    state = claimed;
+    const instructions = [...(state.instructions ?? [])];
+
+    try {
+      const stages = state.stages
+        .filter((s) => s.id === "ci" || s.id === "comments")
+        .map((s) => s.id);
+      const result = await spawnPipeline(events, {
+        cwd: state.cwd,
+        runId: state.runId,
+        stateDir: runDir(state.cwd, state.runId),
+        stages,
+        phase: "ci",
+        instructions,
+      });
+      if (result.error) {
+        state.status = "failed";
+        state.error = result.error;
+        writeState(state);
+        removeRun(state.runId, state.cwd);
+        return;
+      }
+      state.instructions = [];
+      state.currentRun = {
+        asyncId: result.asyncId,
+        asyncDir: result.asyncDir,
+        spawnedBySessionId: ctxSessionFile(ctx),
+      };
+      writeState(state);
+      registerRun(state);
+      ctx.ui?.notify?.(
+        `ship: monitoring cycle started${result.asyncId ? ` [${result.asyncId.slice(0, 8)}]` : ""}`,
+        "info",
+      );
+    } finally {
+      cycleSpawns.delete(state.runId);
+    }
+  };
+
+  const maybeCatchUpCycle = async (ctx: any): Promise<void> => {
+    const cwd = ctxCwd(ctx);
+    const raw = cwd ? readActiveState(cwd) : undefined;
+    if (!raw || raw.status === "done" || raw.status === "failed" || raw.status === "aborted") return;
+    const { state, changed } = reconcileLiveness(raw);
+    if (changed) writeState(state);
+    if (!isMonitoringRun(state) || state.status !== "waiting-ci" || runIsLive(state)) return;
+    const next = state.ci?.nextCheckAt;
+    if (!next || Number.isNaN(Date.parse(next)) || Date.parse(next) > Date.now()) return;
+    await spawnCycle(ctx, state);
+  };
+
   // Abort/clear the active run. A live run is confirmed + interrupted; a
   // terminal or dead-executor run is cleared without ceremony.
   const abortRun = async (ctx: any): Promise<void> => {
@@ -216,8 +313,11 @@ export default function (pi: ExtensionAPI) {
       const events = getEvents(pi);
       if (events && state.currentRun?.asyncId) interruptRun(events, state.currentRun.asyncId);
     }
+    cancelScheduledJob(cwd!, state.ci?.scheduleJobId, state.ci?.scheduleJobName);
     state.status = "aborted";
+    if (state.ci) state.ci.nextCheckAt = null;
     writeState(state);
+    removeRun(state.runId, state.cwd);
     setCurrentPointer(cwd!, undefined);
     renderFooter(ctx);
     ctx.ui.notify(`ship: cleared ${state.runId}`, "info");
@@ -237,7 +337,7 @@ export default function (pi: ExtensionAPI) {
       // one. Terminal or dead-executor runs are superseded automatically
       // (createRun overwrites the pointer), so a failed run never gets stuck.
       const existing = readActiveState(cwd);
-      if (existing && runIsLive(existing)) {
+      if (existing && (cycleSpawns.has(existing.runId) || runIsLive(existing))) {
         ctx.ui.notify(
           `ship: a run is already active (${existing.runId}). /ship-abort first or Ctrl+S to watch.`,
           "warning",
@@ -275,6 +375,7 @@ export default function (pi: ExtensionAPI) {
         parentSessionFile: ctxSessionFile(ctx),
         title: parsed.title,
       });
+      registerRun(state);
       renderFooter(ctx);
       ctx.ui.notify(`ship: starting ${state.runId} (${stages.join(" → ")})`, "info");
 
@@ -289,6 +390,7 @@ export default function (pi: ExtensionAPI) {
         state.status = "failed";
         state.error = result.error;
         writeState(state);
+        removeRun(state.runId, state.cwd);
         renderFooter(ctx);
         ctx.ui.notify(`ship: spawn failed — ${result.error}`, "error");
         return;
@@ -300,6 +402,7 @@ export default function (pi: ExtensionAPI) {
         spawnedBySessionId: ctxSessionFile(ctx),
       };
       writeState(state);
+      registerRun(state);
       ctx.ui.notify(
         `ship: executor running${result.asyncId ? ` [${result.asyncId.slice(0, 8)}]` : ""}.`,
         "info",
@@ -314,6 +417,42 @@ export default function (pi: ExtensionAPI) {
     description: "Open the ship pipeline status panel",
     handler: async (_args, ctx) => {
       await openOverlay(ctx);
+    },
+  });
+
+  // ---- /ship-list -----------------------------------------------------------
+  pi.registerCommand("ship-list", {
+    description: "Show ship runs across worktrees",
+    handler: async (_args, ctx) => {
+      const fleet = listFleet(getEvents(pi));
+      const lines = fleet.length
+        ? fleet.map((entry) => {
+            const state = entry.state;
+            const next = state?.ci?.nextCheckAt ? ` next ${state.ci.nextCheckAt}` : "";
+            return `${state?.status ?? "?"} ${state?.stage ?? "—"} ${entry.runId} — ${entry.cwd}${next}`;
+          })
+        : ["no active ship runs"];
+      if (ctx.mode !== "tui") {
+        ctx.ui.notify(lines.join("\n"), "info");
+        return;
+      }
+      await ctx.ui.custom(
+        (tui: any, theme: any, _kb: any, done: () => void) => ({
+          render: (width: number) => [
+            theme.fg("accent", theme.bold("🚀 ship fleet")),
+            "",
+            ...lines.map((line) => truncateToWidth(line, Math.max(12, width - 4))),
+            "",
+            theme.fg("dim", "esc/q close"),
+          ],
+          invalidate: () => {},
+          handleInput: (data: string) => {
+            if (data === "q" || data === "\u001b") done();
+            tui.requestRender();
+          },
+        }),
+        { overlay: true, overlayOptions: { anchor: "top-right", width: "60%", maxHeight: "80%" } },
+      );
     },
   });
 
@@ -359,7 +498,14 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ---- lifecycle: attach + footer ticker ------------------------------------
+  pi.on("before_agent_start", async (event: any, ctx: any) => {
+    if (isInMemorySession(ctx) && isScheduledCyclePrompt(event.prompt)) {
+      registerShipTools(pi);
+    }
+  });
+
   pi.on("session_start", async (_event, ctx) => {
+    if (isInMemorySession(ctx)) return;
     savedCtx = ctx;
     const cwd = ctxCwd(ctx);
     if (cwd) {
@@ -369,8 +515,9 @@ export default function (pi: ExtensionAPI) {
           `ship run active for this worktree (${state.stage ?? "…"}) — Ctrl+S to view`,
           "info",
         );
-        // catch-up-on-attach (v2): if ci.nextCheckAt is in the past and no live
-        // run is recorded, fire a cycle here. Wired when Phase 2 lands.
+        // Catch-up-on-attach: a prior session's schedule may have died with
+        // its in-memory scheduler. A due state file is the durable trigger.
+        void maybeCatchUpCycle(ctx);
       }
     }
     renderFooter(ctx);
@@ -380,6 +527,7 @@ export default function (pi: ExtensionAPI) {
       if (!savedCtx) return;
       try {
         renderFooter(savedCtx);
+        void maybeCatchUpCycle(savedCtx);
       } catch {
         savedCtx = undefined;
         stopTimer();

@@ -14,10 +14,15 @@ tools:
   - edit
   - write
   - ship_stage
+  - ship_cycle
   - ship_decision_required
+  - schedule_prompt
 ---
 
 You are the **ship pipeline executor**. Load and follow the `ship` skill.
+For Phase 2 scheduled prompts, honor the `SHIP_SCHEDULED_CYCLE` marker,
+reconstruct context from state.json/journal.md/git/gh, and run exactly one
+CI/comments cycle before scheduling the next one.
 
 Report every stage transition and decision through the provided tools — never
 hand-write `state.json`:

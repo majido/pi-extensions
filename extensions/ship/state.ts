@@ -19,6 +19,8 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -71,6 +73,8 @@ export interface ShipState {
     asyncId?: string;
     asyncDir?: string;
     spawnedBySessionId?: string;
+    claimId?: string;
+    claimedAt?: string;
   };
   stage?: string;
   status: RunStatus;
@@ -84,6 +88,9 @@ export interface ShipState {
     nextCheckAt?: string | null;
     checkConclusions?: Record<string, string>;
     cycles?: number;
+    scheduleJobId?: string;
+    scheduleJobName?: string;
+    lastActivityAt?: string;
   };
   seenCommentIds?: string[];
   seenReviewIds?: string[];
@@ -197,9 +204,17 @@ export function readRuntimeState(asyncDir?: string): string | undefined {
   }
 }
 
+const CLAIM_TTL_MS = 30_000;
+
 export function executorIsLive(state: ShipState): boolean {
-  const rt = readRuntimeState(state.currentRun?.asyncDir);
-  if (rt === undefined) return true; // unknown → don't claim it's dead
+  if (!state.currentRun) return false;
+  const rt = readRuntimeState(state.currentRun.asyncDir);
+  if (rt === undefined) {
+    const claimedAt = state.currentRun?.claimedAt;
+    if (!state.currentRun?.claimId || !claimedAt) return true; // unknown → don't claim it's dead
+    const age = Date.now() - Date.parse(claimedAt);
+    return Number.isFinite(age) && age < CLAIM_TTL_MS;
+  }
   return rt === "running";
 }
 
@@ -217,6 +232,28 @@ export function reconcileLiveness(
     return { state, changed: false };
   }
   const rt = readRuntimeState(state.currentRun?.asyncDir);
+  if (rt === undefined && state.currentRun?.claimId && !executorIsLive(state)) {
+    const stages = state.stages.map((s) =>
+      s.status === "running"
+        ? { ...s, status: "failed" as StageStatus, note: `${s.note ?? ""} (spawn claim expired)`.trim() }
+        : s,
+    );
+    return {
+      state: {
+        ...state,
+        stages,
+        status: "waiting-ci",
+        currentRun: undefined,
+        ci: {
+          ...(state.ci ?? {}),
+          intervalMin: state.ci?.intervalMin ?? 1,
+          nextCheckAt: new Date(Date.now() + 60_000).toISOString(),
+          lastActivityAt: new Date().toISOString(),
+        },
+      },
+      changed: true,
+    };
+  }
   if (rt === undefined || rt === "running") return { state, changed: false };
 
   // Executor has ended. Derive intent from stage statuses (no separate phase).
@@ -224,6 +261,17 @@ export function reconcileLiveness(
     (s) => s.status === "done" || s.status === "skipped",
   );
   if (allDone) {
+    const monitoringArmed =
+      state.stages.some((s) => MONITORING_STAGES.has(s.id)) &&
+      state.stages.some((s) => s.id === "pr" && s.status === "done") &&
+      Boolean(state.ci?.nextCheckAt);
+    if (monitoringArmed) {
+      if (state.status === "waiting-ci" && !state.currentRun) return { state, changed: false };
+      return {
+        state: { ...state, status: "waiting-ci", currentRun: undefined },
+        changed: true,
+      };
+    }
     return state.status === "done"
       ? { state, changed: false }
       : { state: { ...state, status: "done" }, changed: true };
@@ -237,9 +285,21 @@ export function reconcileLiveness(
   const monitoring =
     (running && MONITORING_STAGES.has(running.id)) || (!running && prDone);
   if (monitoring) {
-    return state.status === "waiting-ci"
+    const stages = state.stages.map((s) =>
+      s.status === "running" && MONITORING_STAGES.has(s.id)
+        ? { ...s, status: "failed" as StageStatus, note: `${s.note ?? ""} (executor exited)`.trim() }
+        : s,
+    );
+    const ci = {
+      ...(state.ci ?? {}),
+      intervalMin: state.ci?.intervalMin ?? 1,
+      nextCheckAt: state.ci?.nextCheckAt ?? new Date(Date.now() + 60_000).toISOString(),
+      lastActivityAt: new Date().toISOString(),
+    };
+    const next = { ...state, stages, status: "waiting-ci" as RunStatus, ci, currentRun: undefined };
+    return state.status === "waiting-ci" && state.ci?.nextCheckAt && !state.currentRun && stages.every((s, i) => s === state.stages[i])
       ? { state, changed: false }
-      : { state: { ...state, status: "waiting-ci" }, changed: true };
+      : { state: next, changed: true };
   }
 
   // Otherwise the executor exited mid-pipeline: it stalled. Any stage left
@@ -250,6 +310,52 @@ export function reconcileLiveness(
       : s,
   );
   return { state: { ...state, stages, status: "failed" }, changed: true };
+}
+
+/** Atomically claim a due monitoring cycle across attached sessions. */
+export function tryClaimCycle(
+  cwd: string,
+  runId: string,
+  spawnedBySessionId?: string,
+): ShipState | undefined {
+  const lock = `${statePath(cwd, runId)}.cycle-claim`;
+  try {
+    mkdirSync(lock);
+  } catch {
+    try {
+      if (Date.now() - statSync(lock).mtimeMs > CLAIM_TTL_MS) {
+        rmSync(lock, { recursive: true, force: true });
+        mkdirSync(lock);
+      } else {
+        return undefined;
+      }
+    } catch {
+      return undefined;
+    }
+  }
+  try {
+    const state = readState(cwd, runId);
+    if (!state || runIsLive(state)) return undefined;
+    if (state.ci?.nextCheckAt && Date.parse(state.ci.nextCheckAt) > Date.now()) return undefined;
+    state.status = "running";
+    state.ci = { ...(state.ci ?? {}), nextCheckAt: null };
+    const firstStage = state.stages.find((s) => s.id === "ci" || s.id === "comments");
+    if (firstStage) {
+      firstStage.status = "running";
+      firstStage.startedAt ??= new Date().toISOString();
+      firstStage.note = "starting monitoring cycle…";
+      state.stage = firstStage.id;
+    }
+    state.currentRun = {
+      claimId: `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      claimedAt: new Date().toISOString(),
+      spawnedBySessionId,
+    };
+    writeState(state);
+    return state;
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
 }
 
 export function appendJournal(cwd: string, runId: string, line: string): void {

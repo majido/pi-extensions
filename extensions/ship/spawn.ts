@@ -10,6 +10,8 @@
  * robust default. `context: "fork"` remains available for callers that want it.
  */
 
+import { buildCyclePrompt } from "./cycle.ts";
+
 const RPC_REQUEST_EVENT = "subagents:rpc:v1:request";
 const RPC_REPLY_PREFIX = "subagents:rpc:v1:reply:";
 
@@ -23,6 +25,7 @@ export interface SpawnPipelineParams {
   runId: string;
   stateDir: string;
   stages: string[];
+  phase?: "pipeline" | "ci";
   /** User steering / kickoff notes to seed the first run. */
   instructions?: string[];
   /** Defaults to "fresh" (robust). "fork" is opt-in and can fail mid-turn. */
@@ -41,6 +44,14 @@ function buildTask(p: SpawnPipelineParams): string {
   const steer = p.instructions?.length
     ? `\n\nUser instructions to honor:\n${p.instructions.map((s) => `- ${s}`).join("\n")}`
     : "";
+  if (p.phase === "ci") {
+    return buildCyclePrompt({
+      runId: p.runId,
+      cwd: p.cwd,
+      stateDir: p.stateDir,
+      instruction: p.instructions?.join("; "),
+    });
+  }
   return [
     `Run the ship pipeline. Load the \`ship\` skill and follow it.`,
     ``,
@@ -48,10 +59,9 @@ function buildTask(p: SpawnPipelineParams): string {
     `state dir: ${p.stateDir}`,
     `stages this run: ${scope}`,
     ``,
-    `Maintain ${p.stateDir}/state.json (atomically) and append`,
-    `${p.stateDir}/journal.md as you go. Update each stage's status and a`,
-    `short present/past-tense note so the user's view stays accurate.`,
-    `Escalate design-level or ambiguous items to needsDecision and stop them.`,
+    `Use ship_stage and ship_decision_required for state transitions; never`,
+    `hand-write ${p.stateDir}/state.json. Append ${p.stateDir}/journal.md and`,
+    `stage artifacts as you go. Escalate design-level or ambiguous items.`,
     steer,
   ].join("\n");
 }
