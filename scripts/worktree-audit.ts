@@ -307,15 +307,15 @@ function classify(e: Omit<WorktreeReport, "suggestion" | "reasons">, staleDays: 
 
 function printTable(reports: WorktreeReport[]) {
 	const rows = reports.map((r) => [
+		r.suggestion,
 		r.branch ?? "(detached)",
 		r.head.ageDays !== null ? `${r.head.ageDays}d` : "?",
 		r.git.dirty === null ? "?" : r.git.dirty ? "dirty" : "clean",
 		r.pr ? `#${r.pr.number} ${r.pr.state}` : "-",
 		r.inUse ? "IN_USE" : "",
-		r.suggestion,
 		r.path,
 	]);
-	const header = ["BRANCH", "AGE", "STATE", "PR", "", "SUGGESTION", "PATH"];
+	const header = ["SUGGESTION", "BRANCH", "AGE", "STATE", "PR", "", "PATH"];
 	const widths = header.map((h, i) => Math.max(h.length, ...rows.map((row) => row[i].length)));
 	const fmt = (row: string[]) => row.map((cell, i) => cell.padEnd(widths[i])).join("  ");
 	console.log(fmt(header));
