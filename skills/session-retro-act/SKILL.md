@@ -79,7 +79,8 @@ Subagents must not:
 - Install tools
 - Spawn additional subagents
 - Post comments or publish artifacts
-- Treat unsupported retrospective claims as verified facts
+
+Trust the retrospective's own account of what happened and its own suggested fixes. Do not re-investigate the original incident: no hunting for the source session transcript, no independently corroborating quotes against git/PR history, no confidence-rating the narrative. That verification effort duplicates the retro-writing step itself and is out of scope here. Spend subagent effort on turning each finding into a concrete, implementation-ready proposal, not on re-litigating whether the retro is accurate.
 
 Give each subagent:
 
@@ -89,27 +90,22 @@ Give each subagent:
 
 Require each result to contain:
 
-1. **Validated observations**
-   - What happened
-   - Supporting quotation or evidence
-   - Whether the original session evidence was available
-   - Confidence: high, medium, or low
+1. **Issue summary**
+   - One to three sentences per finding, taken at face value from the retro: what happened, what the retro itself proposes (if anything)
+   - No independent verification of the incident narrative required
 
-2. **Root causes**
+2. **Root cause category**
    - Workflow gap, missing automation, prompt issue, tool misuse, knowledge gap, or isolated mistake
-   - Whether the issue appears recurring or one-off
+   - Whether it looks recurring (matches a pattern in other retros or a known standing gap) or one-off
 
-3. **Candidate improvements**
-   - Modify an existing skill, extension, prompt, agent, MCP, setting, or rule
-   - Create something new only when modification is insufficient
-   - Prefer deterministic automation for repetitive, stable procedures
-   - Identify the likely source-of-truth file or repository
+3. **Implementation-ready proposal**
+   - For each finding worth acting on: modify an existing skill, extension, prompt, agent, MCP, setting, or rule; create something new only when modification is insufficient
+   - Inspect and name the exact source-of-truth file/path to change
+   - Sketch the actual change (the specific line, section, or clause to add or edit) — not just a description of the idea
    - Include expected benefit, effort, risk, and validation method
 
 4. **Ideas to reject**
-   - Suggestions that are speculative, duplicative, overly broad, obsolete, or not worth their maintenance cost
-
-When source session metadata is available in the retrospective, use it to locate the original session evidence. Otherwise label factual validation as limited; do not imply that the retrospective itself independently proves its claims.
+   - Retro suggestions that are speculative, duplicative, overly broad, obsolete, or not worth their maintenance cost, with a one-line reason
 
 For a run that must return a report before ending, wait for the bounded fanout through the harness-native subagent completion mechanism. Never sleep or poll status in a loop.
 
@@ -145,8 +141,7 @@ Deduplicate overlapping suggestions and identify recurring patterns across sessi
 Rank up to 10 proposals using:
 
 - Expected workflow impact
-- Frequency of the underlying problem
-- Evidence confidence
+- Frequency of the underlying problem (how many retros raise it)
 - Implementation effort
 - Operational and maintenance cost
 - Reversibility
@@ -159,7 +154,6 @@ For every proposal include:
 - Title and rank
 - Problem and root cause
 - Retrospectives providing evidence
-- Confidence
 - Proposed change
 - Exact likely targets
 - Why this is preferable to alternatives
@@ -180,7 +174,7 @@ Create a single-page HTML report containing:
 - Current workflow baseline
 - Recurring patterns
 - Ranked proposal cards
-- Evidence and confidence
+- Evidence (which retros) and frequency
 - Cost, risk, and impact comparison
 - Proposed files or systems affected
 - Approval controls for each proposal:
