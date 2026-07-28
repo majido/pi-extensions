@@ -49,6 +49,9 @@ the project venv/toolchain — use it:
   (`.venv/lib/.../<pkg>`) and/or run a small live check with `uv run python -c`.
 - "Tests cover this" → run the touched tests.
 - "No-op for path X" → trace path X in the code and confirm.
+- Claims made by other reviewers in the thread (not just the PR description)
+  — verify those against source too before relaying or endorsing them in your
+  verdict.
 
 Cheap local checks when the project makes them easy (e.g. for iris:
 `uv run ruff check src/ tests/`, `uv run pyright src/`, targeted `uv run pytest`).
@@ -104,6 +107,12 @@ If the user confirms, invoke `/review-done` automatically. Do not merely remind
 them to run it. Review cleanup must not run a session retro; `/review-done` only
 returns the review worktree and closes the review workspace. If they decline,
 leave the review workspace open.
+
+If the user states unprompted that the review is done (e.g. "review is done",
+"done", "clean up") — with or without this question having been asked — treat
+that as confirmation and invoke `/review-done` immediately. Do not ask the
+confirming question back to them in that case; only ask it when you are the
+one proposing to wrap up.
 
 ## Step 5 — Posting (only after confirmation)
 

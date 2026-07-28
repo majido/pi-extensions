@@ -31,6 +31,22 @@ New activity = comment/review ids not in your recorded `seenCommentIds` /
 `seenReviewIds`. Ignore anything authored by you. Reviews with no body and no
 child comments are not actionable.
 
+## 2b. Verify the technical claim
+
+Before classifying, confirm the comment's premise against the actual source —
+don't classify off the comment text alone:
+
+- Re-derive the claimed behavior (read the function/config named, run the
+  relevant test) rather than trusting the reviewer's description of it.
+- If the reviewer offers multiple possible fixes, verifying the claim usually
+  reveals which one has the smaller blast radius — prefer that one over the
+  reviewer's first-listed suggestion.
+- The verification result, not the reviewer's severity tag or suggested fix,
+  is what decides clear-win vs escalate: a claim that's true only at
+  file-local scope is a clear win; a claim whose fix requires touching shared
+  infra or cross-cutting behavior is design-level even if the comment reads
+  as a simple ask.
+
 ## 3. Classify each comment
 
 **Clear win — apply autonomously:**
