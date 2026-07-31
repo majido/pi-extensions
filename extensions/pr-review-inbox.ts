@@ -63,6 +63,11 @@ type StateEntry = {
 	seenAt: string;
 	worktree?: string;
 	workspaceRef?: string;
+	// The workspace's cmux title (e.g. "🔍 iris#129"), stable across the
+	// lifetime of the review. workspaceRef drifts (cmux workspace refs are not
+	// durable long-lived identifiers), so this is what /review-done re-resolves
+	// the live ref from at close time.
+	workspaceTitle?: string;
 	status: "seen" | "open" | "done";
 	title?: string;
 	url?: string;
@@ -255,10 +260,38 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 			seenAt: new Date().toISOString(),
 			worktree,
 			workspaceRef,
+			workspaceTitle: workspaceName,
 			status: "open",
 			title: pr.title,
 			url: pr.url,
 		};
+	}
+
+	// Re-resolve a workspace's current ref by its (stable) title. cmux workspace
+	// refs are positional, not durable identifiers — they drift as other
+	// workspaces are created/closed elsewhere, so a ref captured at pickup time
+	// and stored for days is not safe to close by directly. Scans every window
+	// since pickups don't pin which window they land in.
+	async function findWorkspaceRefByTitle(title: string): Promise<string | undefined> {
+		let windows: Array<{ id: string }>;
+		try {
+			windows = JSON.parse(await run("cmux", ["list-windows", "--json"], homedir(), 30_000));
+		} catch {
+			return undefined;
+		}
+		for (const w of windows) {
+			try {
+				const raw = await run("cmux", ["workspace", "list", "--window", w.id, "--json"], homedir(), 30_000);
+				const parsed = JSON.parse(raw) as {
+					workspaces?: Array<{ ref: string; title?: string; custom_title?: string | null }>;
+				};
+				const match = parsed.workspaces?.find((ws) => ws.custom_title === title || ws.title === title);
+				if (match) return match.ref;
+			} catch {
+				// window may have closed mid-scan; keep looking in the rest
+			}
+		}
+		return undefined;
 	}
 
 	// ── Commands ──────────────────────────────────────────────────────────────
@@ -511,9 +544,17 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 			ctx.ui.notify(returnMessage, "warning");
 		}
 
-		if (info.workspaceRef) {
+		// The ref stored at pickup time can be stale by now (see
+		// findWorkspaceRefByTitle) — re-resolve by title, falling back to the
+		// stored ref only if that lookup fails, and to a reconstructed title
+		// for state entries picked up before workspaceTitle was tracked.
+		const [repoFull, prNumber] = key.split("#");
+		const expectedTitle = info.workspaceTitle ?? `🔍 ${repoFull.split("/")[1]}#${prNumber}`;
+		const liveRef = await findWorkspaceRefByTitle(expectedTitle).catch(() => undefined);
+		const refToClose = liveRef ?? info.workspaceRef;
+		if (refToClose) {
 			// Closing the workspace kills this pi process; do it last.
-			await pi.exec("cmux", ["workspace", "close", info.workspaceRef], { cwd: homedir(), timeout: 30_000 }).catch(() => {});
+			await pi.exec("cmux", ["workspace", "close", refToClose], { cwd: homedir(), timeout: 30_000 }).catch(() => {});
 		}
 		ctx.shutdown();
 		return `Finished review of ${key}. ${returnMessage}`;
