@@ -263,80 +263,95 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 
 	// ── Commands ──────────────────────────────────────────────────────────────
 
+	// Shared by the /review-inbox command and the review_inbox tool. The tool
+	// used to re-queue "/review-inbox ..." via pi.sendUserMessage(..., { deliverAs:
+	// "followUp" }), but that queued text comes back as a literal user turn
+	// rather than being intercepted as a slash command — the LLM just sees the
+	// text and calls the tool again, looping forever without ever scanning.
+	// Calling this function directly from both entry points avoids that.
+	async function runReviewInbox(flags: string[], ctx: ExtensionContext): Promise<string> {
+		const auto = flags.includes("--auto");
+		const dryRun = flags.includes("--dry-run");
+		const baseline = flags.includes("--baseline");
+
+		let prs: Pr[];
+		try {
+			prs = await fetchReviewRequests(ctx.cwd);
+		} catch (error) {
+			const message = `gh search failed: ${error instanceof Error ? error.message : String(error)}`;
+			ctx.ui.notify(message, "error");
+			return message;
+		}
+
+		const state = readState();
+		const newPrs = prs.filter((pr) => !state[prKey(pr)]);
+
+		if (baseline) {
+			for (const pr of prs) {
+				state[prKey(pr)] = { seenAt: new Date().toISOString(), status: "seen", title: pr.title, url: pr.url };
+			}
+			writeState(state);
+			const message = `Baseline: marked ${prs.length} review request(s) as seen.`;
+			ctx.ui.notify(message, "info");
+			return message;
+		}
+
+		if (newPrs.length === 0) {
+			const message = `No new review requests (${prs.length} total in scope).`;
+			if (!auto) ctx.ui.notify(message, "info");
+			return message;
+		}
+
+		const listing = newPrs
+			.map((pr) => `- ${prKey(pr)} — ${pr.title} (@${pr.author})`)
+			.join("\n");
+
+		if (dryRun) {
+			const message = `New review requests (dry run):\n${listing}`;
+			ctx.ui.notify(message, "info");
+			return message;
+		}
+
+		let toPickup = newPrs;
+		if (auto) {
+			toPickup = newPrs.slice(0, autoLimit());
+		} else {
+			const confirmed = await ctx.ui.confirm(
+				`Pick up ${newPrs.length} PR(s) for review?`,
+				`${listing}\n\nEach gets a treehouse worktree + cmux workspace (pi | PR browser).`,
+			);
+			if (!confirmed) return "Pickup cancelled by user.";
+		}
+
+		const picked: string[] = [];
+		const failed: string[] = [];
+		for (const pr of toPickup) {
+			try {
+				state[prKey(pr)] = await pickupPr(pr, ctx);
+				picked.push(prKey(pr));
+			} catch (error) {
+				failed.push(`${prKey(pr)}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			writeState(state);
+		}
+
+		const summary = [
+			picked.length ? `Picked up: ${picked.join(", ")}` : null,
+			failed.length ? `Failed:\n${failed.join("\n")}` : null,
+			auto && newPrs.length > toPickup.length
+				? `${newPrs.length - toPickup.length} more pending (auto limit ${autoLimit()}); run /review-inbox to pick up.`
+				: null,
+		].filter(Boolean).join("\n");
+		if (summary) ctx.ui.notify(summary, failed.length ? "warning" : "info");
+		return summary || `Picked up ${picked.length} PR(s), no issues.`;
+	}
+
 	pi.registerCommand("review-inbox", {
 		description: "Scan PRs awaiting my review and open review workspaces for new ones",
 		getArgumentCompletions: () => null,
 		handler: async (rawArgs, ctx) => {
 			const flags = rawArgs.trim().split(/\s+/).filter(Boolean);
-			const auto = flags.includes("--auto");
-			const dryRun = flags.includes("--dry-run");
-			const baseline = flags.includes("--baseline");
-
-			let prs: Pr[];
-			try {
-				prs = await fetchReviewRequests(ctx.cwd);
-			} catch (error) {
-				ctx.ui.notify(`gh search failed: ${error instanceof Error ? error.message : String(error)}`, "error");
-				return;
-			}
-
-			const state = readState();
-			const newPrs = prs.filter((pr) => !state[prKey(pr)]);
-
-			if (baseline) {
-				for (const pr of prs) {
-					state[prKey(pr)] = { seenAt: new Date().toISOString(), status: "seen", title: pr.title, url: pr.url };
-				}
-				writeState(state);
-				ctx.ui.notify(`Baseline: marked ${prs.length} review request(s) as seen.`, "info");
-				return;
-			}
-
-			if (newPrs.length === 0) {
-				if (!auto) ctx.ui.notify(`No new review requests (${prs.length} total in scope).`, "info");
-				return;
-			}
-
-			const listing = newPrs
-				.map((pr) => `- ${prKey(pr)} — ${pr.title} (@${pr.author})`)
-				.join("\n");
-
-			if (dryRun) {
-				ctx.ui.notify(`New review requests (dry run):\n${listing}`, "info");
-				return;
-			}
-
-			let toPickup = newPrs;
-			if (auto) {
-				toPickup = newPrs.slice(0, autoLimit());
-			} else {
-				const confirmed = await ctx.ui.confirm(
-					`Pick up ${newPrs.length} PR(s) for review?`,
-					`${listing}\n\nEach gets a treehouse worktree + cmux workspace (pi | PR browser).`,
-				);
-				if (!confirmed) return;
-			}
-
-			const picked: string[] = [];
-			const failed: string[] = [];
-			for (const pr of toPickup) {
-				try {
-					state[prKey(pr)] = await pickupPr(pr, ctx);
-					picked.push(prKey(pr));
-				} catch (error) {
-					failed.push(`${prKey(pr)}: ${error instanceof Error ? error.message : String(error)}`);
-				}
-				writeState(state);
-			}
-
-			const summary = [
-				picked.length ? `Picked up: ${picked.join(", ")}` : null,
-				failed.length ? `Failed:\n${failed.join("\n")}` : null,
-				auto && newPrs.length > toPickup.length
-					? `${newPrs.length - toPickup.length} more pending (auto limit ${autoLimit()}); run /review-inbox to pick up.`
-					: null,
-			].filter(Boolean).join("\n");
-			if (summary) ctx.ui.notify(summary, failed.length ? "warning" : "info");
+			await runReviewInbox(flags, ctx);
 		},
 	});
 
@@ -432,8 +447,8 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		name: "review_inbox",
 		label: "Scan PR review inbox",
 		description:
-			"Queue /review-inbox to scan PRs awaiting my review and open review workspaces for new ones. Pass auto=true for unattended pickup (no confirmation, capped at PI_REVIEW_AUTO_LIMIT), dryRun=true to only list new PRs, or baseline=true to mark all current requests as seen without pickup. Use this to run the review inbox from an agent or scheduled prompt.",
-		promptSnippet: "Queue /review-inbox to pick up PRs awaiting review",
+			"Scan PRs awaiting my review and open review workspaces for new ones. Pass auto=true for unattended pickup (no confirmation, capped at PI_REVIEW_AUTO_LIMIT), dryRun=true to only list new PRs, or baseline=true to mark all current requests as seen without pickup. Use this to run the review inbox from an agent or scheduled prompt.",
+		promptSnippet: "Scan PRs awaiting review and pick up new ones",
 		promptGuidelines: [
 			"Use review_inbox when asked to run the PR review inbox or when a scheduled /review-inbox prompt fires; pass auto=true for unattended runs.",
 		],
@@ -442,30 +457,78 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 			dryRun: Type.Optional(Type.Boolean()),
 			baseline: Type.Optional(Type.Boolean()),
 		}),
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const flags = [
 				params.auto ? "--auto" : null,
 				params.dryRun ? "--dry-run" : null,
 				params.baseline ? "--baseline" : null,
-			].filter(Boolean).join(" ");
-			const cmd = `/review-inbox${flags ? ` ${flags}` : ""}`;
-			pi.sendUserMessage(cmd, { deliverAs: "followUp" });
+			].filter((f): f is string => f !== null);
+			const result = await runReviewInbox(flags, ctx);
 			return {
-				content: [{ type: "text", text: `Queued ${cmd} to scan the PR review inbox.` }],
+				content: [{ type: "text", text: result }],
 			};
 		},
 	});
 
+	// Shared by the /review-done command and the review_done tool — see the
+	// runReviewInbox comment above for why this must not go through
+	// pi.sendUserMessage(..., { deliverAs: "followUp" }).
+	async function finishReview(ctx: ExtensionContext): Promise<string> {
+		const state = readState();
+		const entry = Object.entries(state).find(
+			([, e]) => e.status === "open" && e.worktree && resolve(ctx.cwd).startsWith(resolve(e.worktree)),
+		);
+		if (!entry) {
+			const message = "No open review found for this directory in pr-review state.";
+			ctx.ui.notify(message, "warning");
+			return message;
+		}
+		const [key, info] = entry;
+
+		const confirmed = await ctx.ui.confirm(
+			`Finish review of ${key}?`,
+			[
+				`Worktree: ${info.worktree}`,
+				info.workspaceRef ? `Workspace: ${info.workspaceRef}` : null,
+				"",
+				"Returns the worktree to the treehouse pool and closes this workspace.",
+			].filter((l): l is string => l !== null).join("\n"),
+		);
+		if (!confirmed) return "Cleanup declined by user.";
+
+		info.status = "done";
+		writeState(state);
+
+		// Return the worktree while running from outside it is safer, but
+		// treehouse return takes an explicit path; run from home.
+		let returnMessage: string;
+		try {
+			await run("treehouse", ["return", info.worktree!, "--force"], homedir(), 120_000);
+			returnMessage = `Returned worktree: ${info.worktree}`;
+			ctx.ui.notify(returnMessage, "info");
+		} catch (error) {
+			returnMessage = `treehouse return failed: ${error instanceof Error ? error.message : String(error)}`;
+			ctx.ui.notify(returnMessage, "warning");
+		}
+
+		if (info.workspaceRef) {
+			// Closing the workspace kills this pi process; do it last.
+			await pi.exec("cmux", ["workspace", "close", info.workspaceRef], { cwd: homedir(), timeout: 30_000 }).catch(() => {});
+		}
+		ctx.shutdown();
+		return `Finished review of ${key}. ${returnMessage}`;
+	}
+
 	pi.registerTool({
 		name: "review_done",
 		label: "Finish PR review",
-		description: "Queue /review-done to return the PR review worktree and close its workspace after the user explicitly confirms that the review is done.",
-		promptSnippet: "Queue /review-done after the user confirms the PR review is complete",
+		description: "Return the PR review worktree and close its workspace after the user explicitly confirms that the review is done.",
+		promptSnippet: "Return the review worktree and close the review workspace once the user confirms the review is complete",
 		parameters: Type.Object({}),
-		async execute() {
-			pi.sendUserMessage("/review-done", { deliverAs: "followUp" });
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			const result = await finishReview(ctx);
 			return {
-				content: [{ type: "text", text: "Queued /review-done to finish the PR review." }],
+				content: [{ type: "text", text: result }],
 			};
 		},
 	});
@@ -474,44 +537,7 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		description: "Finish this PR review: return the treehouse worktree and close the workspace",
 		getArgumentCompletions: () => null,
 		handler: async (_rawArgs, ctx) => {
-			const state = readState();
-			const entry = Object.entries(state).find(
-				([, e]) => e.status === "open" && e.worktree && resolve(ctx.cwd).startsWith(resolve(e.worktree)),
-			);
-			if (!entry) {
-				ctx.ui.notify("No open review found for this directory in pr-review state.", "warning");
-				return;
-			}
-			const [key, info] = entry;
-
-			const confirmed = await ctx.ui.confirm(
-				`Finish review of ${key}?`,
-				[
-					`Worktree: ${info.worktree}`,
-					info.workspaceRef ? `Workspace: ${info.workspaceRef}` : null,
-					"",
-					"Returns the worktree to the treehouse pool and closes this workspace.",
-				].filter((l): l is string => l !== null).join("\n"),
-			);
-			if (!confirmed) return;
-
-			info.status = "done";
-			writeState(state);
-
-			// Return the worktree while running from outside it is safer, but
-			// treehouse return takes an explicit path; run from home.
-			try {
-				await run("treehouse", ["return", info.worktree!, "--force"], homedir(), 120_000);
-				ctx.ui.notify(`Returned worktree: ${info.worktree}`, "info");
-			} catch (error) {
-				ctx.ui.notify(`treehouse return failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
-			}
-
-			if (info.workspaceRef) {
-				// Closing the workspace kills this pi process; do it last.
-				await pi.exec("cmux", ["workspace", "close", info.workspaceRef], { cwd: homedir(), timeout: 30_000 }).catch(() => {});
-			}
-			ctx.shutdown();
+			await finishReview(ctx);
 		},
 	});
 }
