@@ -29,6 +29,21 @@ function loadState(cwd: string): ShipState | undefined {
   return readActiveState(cwd);
 }
 
+/**
+ * The model actually executing this stage, as `provider/id`.
+ *
+ * Read from the runtime rather than accepted from the agent: a model's sense of
+ * its own identity comes from its prompt, not from the process it runs in, so a
+ * self-reported name is unfalsifiable and has been observed to be wrong (a
+ * review performed by Opus reported itself as Sonnet). Returns undefined when
+ * the runtime exposes no model — absence is honest, a guess is not.
+ */
+function runtimeModel(ctx: { model?: { provider?: string; id?: string } }): string | undefined {
+  const model = ctx.model;
+  if (!model?.id) return undefined;
+  return model.provider ? `${model.provider}/${model.id}` : model.id;
+}
+
 /** Extract owner/repo + number from a GitHub PR URL; keeps the raw url too. */
 function parsePrUrl(url: string): { repo?: string; number?: number; url: string } {
   const m = url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
@@ -59,7 +74,12 @@ export function registerShipTools(pi: ExtensionAPI) {
       note: Type.Optional(
         Type.String({ description: "Short one-liner shown to the user" }),
       ),
-      model: Type.Optional(Type.String({ description: "Model handling this stage" })),
+      model: Type.Optional(
+        Type.String({
+          description:
+            "Ignored. The runtime records the real model for this stage; do not pass a model name.",
+        }),
+      ),
       pr_url: Type.Optional(
         Type.String({
           description:
@@ -80,7 +100,9 @@ export function registerShipTools(pi: ExtensionAPI) {
 
       stage.status = params.status as StageStatus;
       if (params.note !== undefined) stage.note = params.note;
-      if (params.model !== undefined) stage.model = params.model;
+      // params.model is deliberately discarded — see runtimeModel.
+      const model = runtimeModel(ctx);
+      if (model !== undefined) stage.model = model;
       const now = new Date().toISOString();
       if (params.status === "running") {
         stage.startedAt ??= now;

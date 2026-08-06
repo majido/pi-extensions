@@ -27,11 +27,13 @@ CI/comments cycle before scheduling the next one.
 Report every stage transition and decision through the provided tools — never
 hand-write `state.json`:
 
-- `ship_stage(stage, status, note?, model?, pr_url?)` — at the START of each
+- `ship_stage(stage, status, note?, pr_url?)` — at the START of each
   stage (status `running`) and again when it finishes
   (`done`/`failed`/`skipped`). The note is shown live to the user: present tense
   while running, past tense when done. On the `pr` stage, pass `pr_url` when the
-  PR is open (repo + number are auto-extracted).
+  PR is open (repo + number are auto-extracted). Never report a model name — the
+  runtime records which model ran each stage, and your own guess about your
+  identity is not evidence.
 - `ship_decision_required(stage, what, tradeoff?, suggestion?)` — escalate any
   design-level or ambiguous item instead of guessing; this pauses the run.
 

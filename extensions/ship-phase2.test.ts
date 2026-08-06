@@ -164,3 +164,91 @@ test("global index lists active runs and removes terminal runs plus their persis
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("ship_stage records the runtime model and ignores the agent's self-report", async () => {
+  // A stage row that reports the model the agent *believes* it is cannot be
+  // trusted: a model's self-knowledge comes from its prompt, not the runtime.
+  // The overlay showed "sonnet" for a review that Opus actually performed.
+  const definitions: any[] = [];
+  const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+  const pi = {
+    registerCommand: () => {},
+    registerShortcut: () => {},
+    registerTool: (tool: { name: string }) => definitions.push(tool),
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(event, handler),
+    events: { emit: () => {} },
+  } as any;
+  shipExtension(pi);
+  await handlers.get("before_agent_start")?.(
+    { prompt: "SHIP_SCHEDULED_CYCLE run-1" },
+    { sessionManager: { isPersisted: () => false } },
+  );
+  const stageTool = definitions.find((tool) => tool.name === "ship_stage");
+
+  const root = mkdtempSync(join(tmpdir(), "ship-model-"));
+  try {
+    const active = state(root, "running");
+    active.stages = [{ id: "review", status: "pending" }];
+    writeState(active);
+    setCurrentPointer(root, active.runId);
+
+    await stageTool.execute(
+      "t",
+      { stage: "review", status: "running", model: "claude-sonnet-4-6" },
+      undefined,
+      undefined,
+      { cwd: root, model: { provider: "anthropic", id: "claude-opus-5" } },
+    );
+
+    const recorded = JSON.parse(
+      readFileSync(join(root, ".pi", "ship", "run-1", "state.json"), "utf8"),
+    ).stages[0].model;
+    assert.equal(recorded, "anthropic/claude-opus-5");
+    assert.notEqual(recorded, "claude-sonnet-4-6");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ship_stage omits the model when the runtime does not expose one", async () => {
+  // Absence is honest. Falling back to the agent's claim would reintroduce
+  // exactly the unverifiable value this replaced.
+  const definitions: any[] = [];
+  const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+  const pi = {
+    registerCommand: () => {},
+    registerShortcut: () => {},
+    registerTool: (tool: { name: string }) => definitions.push(tool),
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(event, handler),
+    events: { emit: () => {} },
+  } as any;
+  shipExtension(pi);
+  await handlers.get("before_agent_start")?.(
+    { prompt: "SHIP_SCHEDULED_CYCLE run-1" },
+    { sessionManager: { isPersisted: () => false } },
+  );
+  const stageTool = definitions.find((tool) => tool.name === "ship_stage");
+
+  const root = mkdtempSync(join(tmpdir(), "ship-model-none-"));
+  try {
+    const active = state(root, "running");
+    active.stages = [{ id: "review", status: "pending" }];
+    writeState(active);
+    setCurrentPointer(root, active.runId);
+
+    await stageTool.execute(
+      "t",
+      { stage: "review", status: "running", model: "claude-sonnet-4-6" },
+      undefined,
+      undefined,
+      { cwd: root },
+    );
+
+    const stage = JSON.parse(
+      readFileSync(join(root, ".pi", "ship", "run-1", "state.json"), "utf8"),
+    ).stages[0];
+    assert.equal(stage.model, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
