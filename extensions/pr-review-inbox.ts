@@ -518,17 +518,6 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		}
 		const [key, info] = entry;
 
-		const confirmed = await ctx.ui.confirm(
-			`Finish review of ${key}?`,
-			[
-				`Worktree: ${info.worktree}`,
-				info.workspaceRef ? `Workspace: ${info.workspaceRef}` : null,
-				"",
-				"Returns the worktree to the treehouse pool and closes this workspace.",
-			].filter((l): l is string => l !== null).join("\n"),
-		);
-		if (!confirmed) return "Cleanup declined by user.";
-
 		info.status = "done";
 		writeState(state);
 
