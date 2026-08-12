@@ -4,7 +4,9 @@
  * Picks up PRs assigned to me for review and opens each in a dedicated cmux
  * workspace: pi agent (auto-starting the review) in the left pane, the PR
  * files view in a browser pane on the right. Worktrees are leased from the
- * `treehouse` pool and returned on /review-done.
+ * `treehouse` pool and returned on /review-done. Every /review-inbox scan
+ * also auto-closes any open review whose PR has since been merged — no
+ * confirmation needed, since there's nothing left to review.
  *
  * Commands:
  *   /review-inbox [--auto] [--dry-run]  — scan review requests, pick up new PRs
@@ -294,6 +296,61 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		return undefined;
 	}
 
+	// Return a review's leased worktree and close its cmux workspace. Shared by
+	// /review-done (interactive, user-confirmed via finishReview) and the
+	// merged-PR sweep below (automatic — a merged PR has nothing left to review).
+	async function returnWorktreeAndCloseWorkspace(key: string, info: StateEntry): Promise<string> {
+		let returnMessage: string;
+		try {
+			await run("treehouse", ["return", info.worktree!, "--force"], homedir(), 120_000);
+			returnMessage = `Returned worktree: ${info.worktree}`;
+		} catch (error) {
+			returnMessage = `treehouse return failed: ${error instanceof Error ? error.message : String(error)}`;
+		}
+
+		// The ref stored at pickup time can be stale by now (see
+		// findWorkspaceRefByTitle) — re-resolve by title, falling back to the
+		// stored ref only if that lookup fails, and to a reconstructed title for
+		// state entries picked up before workspaceTitle was tracked.
+		const [repoFull, prNumber] = key.split("#");
+		const expectedTitle = info.workspaceTitle ?? `🔍 ${repoFull.split("/")[1]}#${prNumber}`;
+		const liveRef = await findWorkspaceRefByTitle(expectedTitle).catch(() => undefined);
+		const refToClose = liveRef ?? info.workspaceRef;
+		if (refToClose) {
+			// Closing a workspace kills its pi process, if one is running there.
+			await pi.exec("cmux", ["workspace", "close", refToClose], { cwd: homedir(), timeout: 30_000 }).catch(() => {});
+		}
+		return returnMessage;
+	}
+
+	// Auto-close reviews whose PR has since been merged (by anyone, any way —
+	// stacked-PR merge, someone else merging it, etc.) — the review is moot,
+	// there's nothing left to look at. Runs on every /review-inbox scan except
+	// --dry-run, which must not mutate anything.
+	async function sweepMergedReviews(ctx: ExtensionContext): Promise<string[]> {
+		const state = readState();
+		const openEntries = Object.entries(state).filter(([, e]) => e.status === "open" && e.worktree);
+		const closedKeys: string[] = [];
+		for (const [key, info] of openEntries) {
+			const [repoFull, prNumber] = key.split("#");
+			let merged: boolean;
+			try {
+				const raw = await run("gh", ["api", `repos/${repoFull}/pulls/${prNumber}`, "--jq", ".merged"], ctx.cwd, 15_000);
+				merged = raw.trim() === "true";
+			} catch {
+				continue; // can't tell right now (network/auth/deleted PR) — next scan retries
+			}
+			if (!merged) continue;
+
+			const returnMessage = await returnWorktreeAndCloseWorkspace(key, info);
+			info.status = "done";
+			writeState(state);
+			ctx.ui.notify(`Merged — closed review: ${key} (${returnMessage})`, "info");
+			closedKeys.push(key);
+		}
+		return closedKeys;
+	}
+
 	// ── Commands ──────────────────────────────────────────────────────────────
 
 	// Shared by the /review-inbox command and the review_inbox tool. The tool
@@ -307,13 +364,18 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		const dryRun = flags.includes("--dry-run");
 		const baseline = flags.includes("--baseline");
 
+		// Garbage-collect reviews whose PR merged since pickup — nothing left to
+		// review. Skipped for --dry-run, which must not mutate anything.
+		const closedMerged = dryRun ? [] : await sweepMergedReviews(ctx).catch(() => []);
+		const mergedNote = closedMerged.length ? `Closed (merged): ${closedMerged.join(", ")}\n` : "";
+
 		let prs: Pr[];
 		try {
 			prs = await fetchReviewRequests(ctx.cwd);
 		} catch (error) {
 			const message = `gh search failed: ${error instanceof Error ? error.message : String(error)}`;
 			ctx.ui.notify(message, "error");
-			return message;
+			return mergedNote + message;
 		}
 
 		const state = readState();
@@ -326,13 +388,13 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 			writeState(state);
 			const message = `Baseline: marked ${prs.length} review request(s) as seen.`;
 			ctx.ui.notify(message, "info");
-			return message;
+			return mergedNote + message;
 		}
 
 		if (newPrs.length === 0) {
 			const message = `No new review requests (${prs.length} total in scope).`;
 			if (!auto) ctx.ui.notify(message, "info");
-			return message;
+			return mergedNote + message;
 		}
 
 		const listing = newPrs
@@ -353,7 +415,7 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 				`Pick up ${newPrs.length} PR(s) for review?`,
 				`${listing}\n\nEach gets a treehouse worktree + cmux workspace (pi | PR browser).`,
 			);
-			if (!confirmed) return "Pickup cancelled by user.";
+			if (!confirmed) return mergedNote + "Pickup cancelled by user.";
 		}
 
 		const picked: string[] = [];
@@ -376,7 +438,7 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 				: null,
 		].filter(Boolean).join("\n");
 		if (summary) ctx.ui.notify(summary, failed.length ? "warning" : "info");
-		return summary || `Picked up ${picked.length} PR(s), no issues.`;
+		return mergedNote + (summary || `Picked up ${picked.length} PR(s), no issues.`);
 	}
 
 	pi.registerCommand("review-inbox", {
@@ -521,30 +583,11 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		info.status = "done";
 		writeState(state);
 
-		// Return the worktree while running from outside it is safer, but
-		// treehouse return takes an explicit path; run from home.
-		let returnMessage: string;
-		try {
-			await run("treehouse", ["return", info.worktree!, "--force"], homedir(), 120_000);
-			returnMessage = `Returned worktree: ${info.worktree}`;
-			ctx.ui.notify(returnMessage, "info");
-		} catch (error) {
-			returnMessage = `treehouse return failed: ${error instanceof Error ? error.message : String(error)}`;
-			ctx.ui.notify(returnMessage, "warning");
-		}
+		const returnMessage = await returnWorktreeAndCloseWorkspace(key, info);
+		ctx.ui.notify(returnMessage, returnMessage.startsWith("treehouse return failed") ? "warning" : "info");
 
-		// The ref stored at pickup time can be stale by now (see
-		// findWorkspaceRefByTitle) — re-resolve by title, falling back to the
-		// stored ref only if that lookup fails, and to a reconstructed title
-		// for state entries picked up before workspaceTitle was tracked.
-		const [repoFull, prNumber] = key.split("#");
-		const expectedTitle = info.workspaceTitle ?? `🔍 ${repoFull.split("/")[1]}#${prNumber}`;
-		const liveRef = await findWorkspaceRefByTitle(expectedTitle).catch(() => undefined);
-		const refToClose = liveRef ?? info.workspaceRef;
-		if (refToClose) {
-			// Closing the workspace kills this pi process; do it last.
-			await pi.exec("cmux", ["workspace", "close", refToClose], { cwd: homedir(), timeout: 30_000 }).catch(() => {});
-		}
+		// Closing the workspace above kills this pi process if it's the one
+		// being reviewed; shutdown() is a harmless fallback otherwise.
 		ctx.shutdown();
 		return `Finished review of ${key}. ${returnMessage}`;
 	}
