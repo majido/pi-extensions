@@ -24,6 +24,8 @@
  *   PI_REVIEW_REPOS         comma-separated nameWithOwner allowlist
  *   PI_REVIEW_MAX_AGE_DAYS  recency cutoff on updatedAt (default 14)
  *   PI_REVIEW_AUTO_LIMIT    max pickups per --auto run (default 3)
+ *   PI_REVIEW_MODEL         model for spawned review sessions (default anthropic/claude-opus-5)
+ *   PI_REVIEW_THINKING      thinking level for spawned review sessions (default high)
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -89,6 +91,20 @@ function maxAgeDays(): number {
 
 function autoLimit(): number {
 	return Number(process.env.PI_REVIEW_AUTO_LIMIT) || 3;
+}
+
+// Review is judgment work (missing tests, unhandled failure modes, brittle
+// abstractions) and deserves a deliberately-chosen high-tier model, not
+// whatever the ambient `defaultModel` happens to be at pickup time. Pickup
+// spawns a brand-new `pi` process with no inherited model context, so without
+// an explicit --model it silently follows the user's global default setting
+// as that drifts across their day (sonnet, fable, opus, ...) — pin it instead.
+function reviewModel(): string {
+	return process.env.PI_REVIEW_MODEL || "anthropic/claude-opus-5";
+}
+
+function reviewThinking(): string {
+	return process.env.PI_REVIEW_THINKING || "high";
 }
 
 function readState(): State {
@@ -211,11 +227,17 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 
 		// 3. Create the two-pane cmux workspace: pi (auto-review) | PR browser
 		const kickoff = buildKickoff(pr.url);
+		const piCommand = [
+			"pi",
+			"--model", shellQuoteSingle(reviewModel()),
+			"--thinking", shellQuoteSingle(reviewThinking()),
+			shellQuoteSingle(kickoff),
+		].join(" ");
 		const layout = JSON.stringify({
 			direction: "horizontal",
 			split: 0.5,
 			children: [
-				{ pane: { surfaces: [{ type: "terminal", command: `exec pi ${shellQuoteSingle(kickoff)}` }] } },
+				{ pane: { surfaces: [{ type: "terminal", command: `exec ${piCommand}` }] } },
 				{ pane: { surfaces: [{ type: "browser", url: `${pr.url}/files` }] } },
 			],
 		});
