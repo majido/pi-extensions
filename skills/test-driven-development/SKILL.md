@@ -1,25 +1,35 @@
 ---
 name: test-driven-development
-description: Drives development with tests. Use when implementing any logic, fixing any bug, or changing any behavior. Use when you need to prove that code works, when a bug report arrives, or when you're about to modify existing functionality.
+description: Chooses meaningful behavioral verification and applies test-first development where it adds value. Use when fixing bugs, changing established behavior, adding edge cases, designing tests for a new feature, or deciding between unit, integration, E2E, and approved-scenario coverage.
 ---
 
 # Test-Driven Development
 
 ## Overview
 
-Write a failing test before writing the code that makes it pass. For bug fixes, reproduce the bug with a test before attempting a fix. Tests are proof — "seems right" is not done. A codebase with good tests is an AI agent's superpower; a codebase without tests is a liability.
+Prefer meaningful behavioral evidence over compliance with a test-first ritual. TDD is valuable when a failing test clarifies established behavior or reproduces a defect, but not every implementation must begin with a test. Never generate superficial tests merely to satisfy a TDD requirement.
 
-## When to Use
+For a brand-new, non-trivial feature, consider whether a table-driven approved-scenario harness can capture customer- or domain-meaningful behavior. Investing in a durable scenario DSL, deterministic runner, and reviewable fixtures can provide more confidence than a large implementation-coupled unit-test suite.
 
-- Implementing any new logic or behavior
-- Fixing any bug (the Prove-It Pattern)
-- Modifying existing functionality
+## When to Use Test-First Development
+
+Strong candidates:
+
+- Fixing a bug (the Prove-It Pattern)
+- Modifying established functionality
 - Adding edge case handling
-- Any change that could break existing behavior
+- Changing behavior with meaningful regression risk
 
-**When NOT to use:** Pure configuration changes, documentation updates, or static content changes that have no behavioral impact.
+Starting with a failing test is not mandatory when:
 
-**Related:** For browser-based changes, combine TDD with runtime verification using Chrome DevTools MCP — see the Browser Testing section below.
+- An explicitly experimental, time-boxed spike is intended to discover behavior and its code may be discarded
+- A major refactor would be impeded by implementation-coupled tests
+- The logic is trivial
+- The artifact is not directly executable, such as documentation, configuration, a prompt, or a `SKILL.md`
+
+Verification is still mandatory. These cases relax the requirement to start with a failing test, not the requirement to provide meaningful evidence that the result works. If experimental code is retained, converted into a feature, or shipped, capture its accepted behavior with automated regression coverage before completion.
+
+**Related:** For browser-based changes, combine automated tests with runtime verification using Chrome DevTools MCP — see the Browser Testing section below.
 
 ## The TDD Cycle
 
@@ -127,28 +137,13 @@ export async function completeTask(id: string): Promise<Task> {
 // Step 3: Test passes → bug fixed, regression guarded
 ```
 
-## The Test Pyramid
+## Choose the Testing Strategy
 
-Invest testing effort according to the pyramid — most tests should be small and fast, with progressively fewer tests at higher levels:
-
-```
-          ╱╲
-         ╱  ╲         E2E Tests (~5%)
-        ╱    ╲        Full user flows, real browser
-       ╱──────╲
-      ╱        ╲      Integration Tests (~15%)
-     ╱          ╲     Component interactions, API boundaries
-    ╱────────────╲
-   ╱              ╲   Unit Tests (~80%)
-  ╱                ╲  Pure logic, isolated, milliseconds each
- ╱──────────────────╲
-```
-
-**The Beyonce Rule:** If you liked it, you should have put a test on it. Infrastructure changes, refactoring, and migrations are not responsible for catching your bugs — your tests are. If a change breaks your code and you didn't have a test for it, that's on you.
+Unit, integration, and E2E describe the execution boundary. Approved scenarios describe how behavior is specified and reviewed; they can execute at any of those boundaries. Prefer the fastest, narrowest boundary that captures the behavior you care about. Optimize for confidence, durability, and reviewability rather than a prescribed test distribution.
 
 ### Test Sizes (Resource Model)
 
-Beyond the pyramid levels, classify tests by what resources they consume:
+Classify tests by the resources they consume:
 
 | Size | Constraints | Speed | Example |
 |------|------------|-------|---------|
@@ -156,20 +151,65 @@ Beyond the pyramid levels, classify tests by what resources they consume:
 | **Medium** | Multi-process OK, localhost only, no external services | Seconds | API tests with test DB, component tests |
 | **Large** | Multi-machine OK, external services allowed | Minutes | E2E tests, performance benchmarks, staging integration |
 
-Small tests should make up the vast majority of your suite. They're fast, reliable, and easy to debug when they fail.
+Smaller tests are usually faster, more reliable, and easier to debug, but size alone does not determine value. A medium service-level test can provide stronger and more durable evidence than many implementation-coupled unit tests.
+
+### Approved Scenarios
+
+For a brand-new, non-trivial feature, consider a table-driven behavioral harness before producing many unit tests.
+
+Use approved scenarios when:
+
+- Behavior can be expressed as input and observable output
+- Many cases can share one deterministic runner
+- Scenarios can be represented as compact, reviewable data rather than assertion code
+- A stable black-box boundary exists
+- Implementation freedom and refactorability matter
+
+An approved scenario may execute against a component, service, API, or full application. Choose the narrowest boundary that captures the customer- or domain-meaningful behavior.
+
+Invest in:
+
+- A domain-specific, low-ambiguity fixture format
+- Normalization of incidental values such as generated IDs, timestamps, and ordering
+- A deterministic runner
+- Reusable fakes or simulators for external systems
+- Fault injection to prove the harness detects incorrect behavior
+
+Avoid raw snapshots containing implementation noise. Approved output should contain only behavior a human can meaningfully validate. The harness itself is test code: validate its execution logic before trusting additional fixtures.
 
 ### Decision Guide
 
 ```
-Is it pure logic with no side effects?
-  → Unit test (small)
+Is this a bug?
+  → Reproduce it with a failing test, then fix it.
 
-Does it cross a boundary (API, database, file system)?
-  → Integration test (medium)
+Is established behavior changing or gaining an edge case?
+  → Prefer a failing behavioral test before implementation.
 
-Is it a critical user flow that must work end-to-end?
-  → E2E test (large) — limit these to critical paths
+Is this a brand-new, non-trivial feature?
+  → Can important behavior be represented as compact input/output cases?
+      Yes → Consider a table-driven approved-scenario harness.
+      No  → Choose focused unit, integration, or E2E coverage.
+
+Is the behavior pure and best understood in isolation?
+  → Unit test (small).
+
+Does meaningful behavior cross a stable boundary?
+  → Integration or service-level test (medium).
+
+Must a critical user journey work across the entire system?
+  → E2E test (large) — limit these to critical paths.
+
+Is the artifact trivial or not directly executable?
+  → Use an appropriate structural or usage check. Do not invent superficial unit tests.
 ```
+
+Then decide whether the verification should be written first:
+
+- **Yes** when it clarifies known behavior, reproduces a failure, protects an established contract, or defines a production-bound new feature.
+- **Not necessarily** for an explicitly experimental, time-boxed spike whose code may be discarded, when a major refactor needs implementation freedom, when the logic is trivial, or when the artifact is not directly executable.
+
+For a brand-new, non-trivial feature, define meaningful behavioral examples early. The approved-scenario runner may evolve alongside the implementation, but automated regression scenarios are required before the feature is complete.
 
 ## Writing Good Tests
 
@@ -291,7 +331,7 @@ describe('TaskService', () => {
 | Testing implementation details | Tests break when refactoring even if behavior is unchanged | Test inputs and outputs, not internal structure |
 | Flaky tests (timing, order-dependent) | Erode trust in the test suite | Use deterministic assertions, isolate test state |
 | Testing framework code | Wastes time testing third-party behavior | Only test YOUR code |
-| Snapshot abuse | Large snapshots nobody reviews, break on any change | Use snapshots sparingly and review every change |
+| Snapshot abuse | Raw snapshots contain implementation noise, go unreviewed, and break on incidental changes | Render stable, domain-meaningful output as approved scenarios and review every change |
 | No test isolation | Tests pass individually but fail together | Each test sets up and tears down its own state |
 | Mocking everything | Tests pass but production breaks | Prefer real implementations > fakes > stubs > mocks. Mock only at boundaries where real deps are slow or non-deterministic |
 
@@ -350,9 +390,10 @@ For detailed testing patterns, examples, and anti-patterns across frameworks, se
 
 | Rationalization | Reality |
 |---|---|
-| "I'll write tests after the code works" | You won't. And tests written after the fact test implementation, not behavior. |
-| "This is too simple to test" | Simple code gets complicated. The test documents the expected behavior. |
-| "Tests slow me down" | Tests slow you down now. They speed you up every time you change the code later. |
+| "I'll decide how to verify it after the code works" | Decide what evidence matters before declaring the work done, even when implementation comes first. |
+| "TDD requires a unit test for every change" | TDD is a technique, not a quota. Prefer meaningful behavioral evidence over superficial tests. |
+| "The approved file changed, so I'll accept the new output" | Approval requires understanding why behavior changed and confirming the new result is correct. |
+| "The harness passes, so it must test the right thing" | Inject a fault and confirm the expected scenario fails. Verify the verifier. |
 | "I tested it manually" | Manual testing doesn't persist. Tomorrow's change might break it with no way to know. |
 | "The code is self-explanatory" | Tests ARE the specification. They document what the code should do, not what it does. |
 | "It's just a prototype" | Prototypes become production code. Tests from day one prevent the "test debt" crisis. |
@@ -360,25 +401,28 @@ For detailed testing patterns, examples, and anti-patterns across frameworks, se
 
 ## Red Flags
 
-- Writing code without any corresponding tests
-- Tests that pass on the first run (they may not be testing what you think)
-- "All tests pass" but no tests were actually run
+- New or changed behavior with no meaningful verification evidence
+- Superficial tests written only to comply with a TDD requirement
 - Bug fixes without reproduction tests
+- Approved fixtures that expose implementation details or incidental output
+- A new non-trivial feature where table-driven approved scenarios were not considered
 - Tests that test framework behavior instead of application behavior
-- Test names that don't describe the expected behavior
-- Skipping tests to make the suite pass
+- "All tests pass" but no tests were actually run
+- Skipping or weakening tests to make the suite pass
 - Running the same test command twice in a row without any intervening code change
 
 ## Verification
 
-After completing any implementation:
+After completing an implementation:
 
-- [ ] Every new behavior has a corresponding test
-- [ ] All tests pass: `npm test`
+- [ ] Every new or changed behavior has meaningful verification evidence
+- [ ] A table-driven approved-scenario harness was considered for each new non-trivial feature
+- [ ] Selected tests pass using the project's actual test command
 - [ ] Bug fixes include a reproduction test that failed before the fix
-- [ ] Test names describe the behavior being verified
-- [ ] No tests were skipped or disabled
-- [ ] Coverage hasn't decreased (if tracked)
+- [ ] Tests and approved fixtures describe observable behavior, not implementation details
+- [ ] The approved-scenario runner was fault-injected when newly introduced or materially changed
+- [ ] No tests were skipped, disabled, or weakened to make the suite pass
+- [ ] Coverage hasn't decreased without an understood reason (if tracked)
 
 **Note:** Run each test command after a change that could affect the result. After a clean run, don't repeat the same command unless the code has changed since — re-running on unchanged code adds no confidence.
 
