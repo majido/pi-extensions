@@ -120,6 +120,21 @@ function writeState(state: State): void {
 	writeFileSync(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`);
 }
 
+// Read-modify-write a single entry against the latest state on disk, not a
+// snapshot held since the start of a long-running scan. Concurrent
+// /review-inbox invocations (e.g. the cron firing while a manual run is still
+// in flight) each hold their own `state` object for the duration of a scan;
+// writing that whole object back at the end silently clobbers entries any
+// other concurrent invocation wrote in the meantime — confirmed empirically:
+// a pickup vanished from state.json entirely while its worktree and cmux
+// workspace still existed, live and untracked. Every mutation site should go
+// through this instead of readState()-once-then-writeState(wholeObject).
+function updateState(key: string, entry: StateEntry): void {
+	const state = readState();
+	state[key] = entry;
+	writeState(state);
+}
+
 function prKey(pr: Pr): string {
 	return `${pr.repoFull}#${pr.number}`;
 }
@@ -366,7 +381,7 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 
 			const returnMessage = await returnWorktreeAndCloseWorkspace(key, info);
 			info.status = "done";
-			writeState(state);
+			updateState(key, info);
 			ctx.ui.notify(`Merged — closed review: ${key} (${returnMessage})`, "info");
 			closedKeys.push(key);
 		}
@@ -405,9 +420,8 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 
 		if (baseline) {
 			for (const pr of prs) {
-				state[prKey(pr)] = { seenAt: new Date().toISOString(), status: "seen", title: pr.title, url: pr.url };
+				updateState(prKey(pr), { seenAt: new Date().toISOString(), status: "seen", title: pr.title, url: pr.url });
 			}
-			writeState(state);
 			const message = `Baseline: marked ${prs.length} review request(s) as seen.`;
 			ctx.ui.notify(message, "info");
 			return mergedNote + message;
@@ -444,12 +458,11 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		const failed: string[] = [];
 		for (const pr of toPickup) {
 			try {
-				state[prKey(pr)] = await pickupPr(pr, ctx);
+				updateState(prKey(pr), await pickupPr(pr, ctx));
 				picked.push(prKey(pr));
 			} catch (error) {
 				failed.push(`${prKey(pr)}: ${error instanceof Error ? error.message : String(error)}`);
 			}
-			writeState(state);
 		}
 
 		const summary = [
@@ -537,9 +550,7 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 					author: meta.author,
 				};
 
-				const state = readState();
-				state[prKey(pr)] = await pickupPr(pr, ctx);
-				writeState(state);
+				updateState(prKey(pr), await pickupPr(pr, ctx));
 				ctx.ui.notify(`Picked up ${prKey(pr)} — workspace ready.`, "info");
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
@@ -603,7 +614,7 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		const [key, info] = entry;
 
 		info.status = "done";
-		writeState(state);
+		updateState(key, info);
 
 		const returnMessage = await returnWorktreeAndCloseWorkspace(key, info);
 		ctx.ui.notify(returnMessage, returnMessage.startsWith("treehouse return failed") ? "warning" : "info");
