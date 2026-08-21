@@ -42,6 +42,7 @@ const DEFAULT_REPOS = [
 	"hopper-org/iris",
 	"hopper-org/travel-tech-lab",
 	"hopper-org/lodging-support-agent",
+	"hopper-org/travel-tech-mcp-gateway",
 ];
 
 const SKILL_PATH = resolve(
