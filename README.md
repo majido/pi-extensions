@@ -33,6 +33,26 @@ Auto-detects `origin/main` or `origin/master` as the base. `/branch-done` checks
 
 </details>
 
+### Open PR
+
+`scripts/cmux-open-pr.mjs` backs a cmux Command Palette action that prompts for a PR URL or reference. It first switches to an existing `🦄 repo#123` workspace; otherwise it leases a Treehouse worktree, checks out the PR, and starts a Pi session named `pr check - repo#123`. Run `/pr-done` from that session to return the worktree and close the workspace.
+
+Formal review workspaces remain distinct: `🔍 repo#123`, with Pi sessions named `pr review - repo#123`.
+
+```jsonc
+{
+  "actions": {
+    "open-pr": {
+      "type": "command",
+      "title": "Open PR",
+      "command": "$HOME/w/personal/pi-extensions/scripts/cmux-open-pr.mjs",
+      "target": "newTabInCurrentPane",
+      "palette": true
+    }
+  }
+}
+```
+
 ### custom-footer
 
 Replaces the default footer with a compact, single-line layout: repo/branch with git indicators on the left, context usage, cost, and model on the right.

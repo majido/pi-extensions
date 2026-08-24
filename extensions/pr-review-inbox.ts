@@ -16,6 +16,7 @@
  *                                         or #n / n (repo of current directory)
  *   /review-pr <url>                    — start reviewing a PR in the current session
  *   /review-done                        — return worktree, close review workspace, exit
+ *   /pr-done                            — return worktree, close PR-check workspace, exit
  *
  * Scheduled trigger (pi-schedule-prompt):
  *   schedule_prompt add, schedule: "0 0,15,30,45 8-18 * * 1-5", prompt: "/review-inbox --auto"
@@ -36,6 +37,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const STATE_FILE = join(homedir(), ".cache", "pr-review", "state.json");
+const PR_CHECK_STATE_FILE = join(homedir(), ".cache", "pr-check", "state.json");
 const REPO_BASE = join(homedir(), "w");
 
 const DEFAULT_REPOS = [
@@ -108,17 +110,21 @@ function reviewThinking(): string {
 	return process.env.PI_REVIEW_THINKING || "high";
 }
 
-function readState(): State {
+function readStateFile(path: string): State {
 	try {
-		return JSON.parse(readFileSync(STATE_FILE, "utf8")) as State;
+		return JSON.parse(readFileSync(path, "utf8")) as State;
 	} catch {
 		return {};
 	}
 }
 
-function writeState(state: State): void {
-	mkdirSync(dirname(STATE_FILE), { recursive: true });
-	writeFileSync(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`);
+function readState(): State {
+	return readStateFile(STATE_FILE);
+}
+
+function writeStateFile(path: string, state: State): void {
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 // Read-modify-write a single entry against the latest state on disk, not a
@@ -130,10 +136,14 @@ function writeState(state: State): void {
 // a pickup vanished from state.json entirely while its worktree and cmux
 // workspace still existed, live and untracked. Every mutation site should go
 // through this instead of readState()-once-then-writeState(wholeObject).
-function updateState(key: string, entry: StateEntry): void {
-	const state = readState();
+function updateStateFile(path: string, key: string, entry: StateEntry): void {
+	const state = readStateFile(path);
 	state[key] = entry;
-	writeState(state);
+	writeStateFile(path, state);
+}
+
+function updateState(key: string, entry: StateEntry): void {
+	updateStateFile(STATE_FILE, key, entry);
 }
 
 function prKey(pr: Pr): string {
@@ -242,9 +252,12 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		}
 
 		// 3. Create the two-pane cmux workspace: pi (auto-review) | PR browser
+		const workspaceName = `🔍 ${pr.repoName}#${pr.number}`;
+		const sessionName = `pr review - ${pr.repoName}#${pr.number}`;
 		const kickoff = buildKickoff(pr.url);
 		const piCommand = [
 			"pi",
+			"--name", shellQuoteSingle(sessionName),
 			"--model", shellQuoteSingle(reviewModel()),
 			"--thinking", shellQuoteSingle(reviewThinking()),
 			shellQuoteSingle(kickoff),
@@ -258,7 +271,6 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 			],
 		});
 
-		const workspaceName = `🔍 ${pr.repoName}#${pr.number}`;
 		const createArgs = [
 			"workspace", "create",
 			"--name", workspaceName,
@@ -602,28 +614,36 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 	// Shared by the /review-done command and the review_done tool — see the
 	// runReviewInbox comment above for why this must not go through
 	// pi.sendUserMessage(..., { deliverAs: "followUp" }).
-	async function finishReview(ctx: ExtensionContext): Promise<string> {
-		const state = readState();
+	async function finishPrWorkspace(
+		ctx: ExtensionContext,
+		stateFile: string,
+		label: string,
+	): Promise<string> {
+		const state = readStateFile(stateFile);
 		const entry = Object.entries(state).find(
 			([, e]) => e.status === "open" && e.worktree && resolve(ctx.cwd).startsWith(resolve(e.worktree)),
 		);
 		if (!entry) {
-			const message = "No open review found for this directory in pr-review state.";
+			const message = `No open ${label} found for this directory.`;
 			ctx.ui.notify(message, "warning");
 			return message;
 		}
 		const [key, info] = entry;
 
 		info.status = "done";
-		updateState(key, info);
+		updateStateFile(stateFile, key, info);
 
 		const returnMessage = await returnWorktreeAndCloseWorkspace(key, info);
 		ctx.ui.notify(returnMessage, returnMessage.startsWith("treehouse return failed") ? "warning" : "info");
 
-		// Closing the workspace above kills this pi process if it's the one
-		// being reviewed; shutdown() is a harmless fallback otherwise.
+		// Closing the workspace above kills this pi process if it owns the
+		// workspace; shutdown() is a harmless fallback otherwise.
 		ctx.shutdown();
-		return `Finished review of ${key}. ${returnMessage}`;
+		return `Finished ${label}: ${key}. ${returnMessage}`;
+	}
+
+	function finishReview(ctx: ExtensionContext): Promise<string> {
+		return finishPrWorkspace(ctx, STATE_FILE, "review");
 	}
 
 	pi.registerTool({
@@ -645,6 +665,14 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		getArgumentCompletions: () => null,
 		handler: async (_rawArgs, ctx) => {
 			await finishReview(ctx);
+		},
+	});
+
+	pi.registerCommand("pr-done", {
+		description: "Finish this PR check: return the treehouse worktree and close the workspace",
+		getArgumentCompletions: () => null,
+		handler: async (_rawArgs, ctx) => {
+			await finishPrWorkspace(ctx, PR_CHECK_STATE_FILE, "PR check");
 		},
 	});
 }
