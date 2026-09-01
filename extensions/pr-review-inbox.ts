@@ -5,8 +5,9 @@
  * workspace: pi agent (auto-starting the review) in the left pane, the PR
  * files view in a browser pane on the right. Worktrees are leased from the
  * `treehouse` pool and returned on /review-done. Every /review-inbox scan
- * also auto-closes any open review whose PR has since been merged — no
- * confirmation needed, since there's nothing left to review.
+ * also auto-closes any open review whose PR is no longer open — merged or
+ * closed without merging — no confirmation needed, since there's nothing
+ * left to review.
  *
  * Commands:
  *   /review-inbox [--auto] [--dry-run]  — scan review requests, pick up new PRs
@@ -373,8 +374,9 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		return returnMessage;
 	}
 
-	// Auto-close reviews whose PR has since been merged (by anyone, any way —
-	// stacked-PR merge, someone else merging it, etc.) — the review is moot,
+	// Auto-close reviews whose PR is no longer open — merged (by anyone, any
+	// way: stacked-PR merge, someone else merging it, etc.) or closed without
+	// merging (rejected/abandoned/superseded). Either way the review is moot,
 	// there's nothing left to look at. Runs on every /review-inbox scan except
 	// --dry-run, which must not mutate anything.
 	async function sweepMergedReviews(ctx: ExtensionContext): Promise<string[]> {
@@ -383,19 +385,20 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		const closedKeys: string[] = [];
 		for (const [key, info] of openEntries) {
 			const [repoFull, prNumber] = key.split("#");
-			let merged: boolean;
+			let pr: { state: string; merged: boolean };
 			try {
-				const raw = await run("gh", ["api", `repos/${repoFull}/pulls/${prNumber}`, "--jq", ".merged"], ctx.cwd, 15_000);
-				merged = raw.trim() === "true";
+				const raw = await run("gh", ["api", `repos/${repoFull}/pulls/${prNumber}`, "--jq", "{state: .state, merged: .merged}"], ctx.cwd, 15_000);
+				pr = JSON.parse(raw);
 			} catch {
 				continue; // can't tell right now (network/auth/deleted PR) — next scan retries
 			}
-			if (!merged) continue;
+			if (pr.state !== "closed") continue;
 
 			const returnMessage = await returnWorktreeAndCloseWorkspace(key, info);
 			info.status = "done";
 			updateState(key, info);
-			ctx.ui.notify(`Merged — closed review: ${key} (${returnMessage})`, "info");
+			const reason = pr.merged ? "Merged" : "Closed without merging";
+			ctx.ui.notify(`${reason} — closed review: ${key} (${returnMessage})`, "info");
 			closedKeys.push(key);
 		}
 		return closedKeys;
@@ -414,10 +417,11 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		const dryRun = flags.includes("--dry-run");
 		const baseline = flags.includes("--baseline");
 
-		// Garbage-collect reviews whose PR merged since pickup — nothing left to
-		// review. Skipped for --dry-run, which must not mutate anything.
+		// Garbage-collect reviews whose PR is no longer open (merged or closed)
+		// since pickup — nothing left to review. Skipped for --dry-run, which
+		// must not mutate anything.
 		const closedMerged = dryRun ? [] : await sweepMergedReviews(ctx).catch(() => []);
-		const mergedNote = closedMerged.length ? `Closed (merged): ${closedMerged.join(", ")}\n` : "";
+		const mergedNote = closedMerged.length ? `Closed (no longer open): ${closedMerged.join(", ")}\n` : "";
 
 		let prs: Pr[];
 		try {
