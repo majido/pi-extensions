@@ -62,13 +62,29 @@ function formatCost(cost: number): string {
   return cost > 1 ? `$${Math.round(cost)}` : `$${cost.toFixed(2)}`;
 }
 
-// Parse an MCP extension status like "MCP: 2/6 servers" → { used, total }.
-function parseMcpStatus(text: string): { used: number; total: number } | null {
-  const m = text.match(/MCP:\s*(\d+)(?:\/(\d+))?/i);
-  if (!m) return null;
-  const used = parseInt(m[1], 10);
-  const total = m[2] ? parseInt(m[2], 10) : used;
-  return { used, total };
+/**
+ * pi-mcp-adapter publishes a versioned, sanitized runtime snapshot on pi's
+ * shared event bus (adapter >= 2.13.0). Reading it never connects a lazy
+ * server. This is the supported contract for extensions — the human-readable
+ * status text is not: it changed from "MCP: 2/6 servers" to
+ * "MCP: 6 servers enabled (2 connected)", which a text parser silently
+ * misreads as "6/6".
+ *
+ * Channel and shape mirror MCP_STATUS_EVENT / McpStatusSnapshot from
+ * pi-mcp-adapter. Declared locally rather than imported because the adapter
+ * lives in pi's own package root and is not a dependency of this repo.
+ */
+export const MCP_STATUS_EVENT = "pi-mcp-adapter/status/v1";
+const MCP_STATUS_SNAPSHOT_VERSION = 1;
+
+/** Connected servers over enabled servers, or null when the snapshot is unusable. */
+export function mcpCountsFromSnapshot(snapshot: unknown): { used: number; total: number } | null {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  const s = snapshot as Record<string, unknown>;
+  if (s.version !== MCP_STATUS_SNAPSHOT_VERSION) return null;
+  if (!Array.isArray(s.servers)) return null;
+  if (typeof s.connectedCount !== "number" || typeof s.disabledCount !== "number") return null;
+  return { used: s.connectedCount, total: s.servers.length - s.disabledCount };
 }
 
 function getGitExtra(cwd: string): GitExtra {
@@ -298,17 +314,30 @@ export default function (pi: ExtensionAPI) {
     return gitExtra;
   }
 
+  // Latest MCP runtime snapshot from the adapter's event bus, or undefined
+  // until the adapter publishes one (no adapter installed, pre-2.13.0, or no
+  // status change yet). Absent snapshot renders no MCP segment.
+  let mcpSnapshot: unknown;
+
   pi.on("session_start", async (_event, ctx) => {
     gitExtra = refreshGitExtra(ctx, 0);
 
     ctx.ui.setFooter((tui, theme, footerData) => {
-      const unsub = footerData.onBranchChange(() => {
+      const unsubBranch = footerData.onBranchChange(() => {
         gitExtra = refreshGitExtra(ctx, 0);
         tui.requestRender();
       });
 
+      const unsubMcp = pi.events.on(MCP_STATUS_EVENT, (data) => {
+        mcpSnapshot = data;
+        tui.requestRender();
+      });
+
       return {
-        dispose: unsub,
+        dispose: () => {
+          unsubBranch();
+          unsubMcp();
+        },
         invalidate() {},
         render(width: number): string[] {
           // ── Stats ──
@@ -358,15 +387,12 @@ export default function (pi: ExtensionAPI) {
           const barSeg = renderContextBar(pct, theme);
           const pctSeg = theme.fg("dim", pct !== null ? `${Math.round(pct)}%` : "?");
 
-          // MCP status: pull out of extension statuses, show inline only when used.
+          // MCP status: read the adapter's snapshot, show inline only when connected.
           const statuses = footerData.getExtensionStatuses();
           let mcpSuffix = "";
-          const mcpRaw = statuses.get("mcp");
-          if (mcpRaw) {
-            const parsed = parseMcpStatus(mcpRaw.replace(/\x1b\[[0-9;]*m/g, ""));
-            if (parsed && parsed.used > 0) {
-              mcpSuffix = ` · MCP ${parsed.used}/${parsed.total}`;
-            }
+          const counts = mcpCountsFromSnapshot(mcpSnapshot);
+          if (counts && counts.used > 0) {
+            mcpSuffix = ` · MCP ${counts.used}/${counts.total}`;
           }
 
           // ── Responsive assembly ──

@@ -10,6 +10,8 @@ import {
   composeFooterLine,
   fitFooterLine,
   FOOTER_DROP_ORDER,
+  mcpCountsFromSnapshot,
+  MCP_STATUS_EVENT,
   type FooterSegments,
 } from "./custom-footer.ts";
 
@@ -150,4 +152,68 @@ test("fitted lines never overflow once pct-only is reached", () => {
     const line = fitFooterLine(SEG, w);
     assert.ok(widthOf(line) <= w, `overflow at width ${w}: "${line}" (${widthOf(line)})`);
   }
+});
+
+// ── mcpCountsFromSnapshot ──
+// Snapshots below match pi-mcp-adapter's McpStatusSnapshot (createMcpStatusSnapshot
+// in mcp-status.ts). `total` is enabled servers, i.e. servers minus disabled.
+
+const snapshot = (servers: Array<{ status: string; disabled?: boolean }>) => ({
+  version: 1,
+  servers: servers.map((s, i) => ({
+    name: `s${i}`,
+    status: s.status,
+    toolCount: 3,
+    disabled: s.disabled ?? false,
+  })),
+  totalTools: servers.length * 3,
+  totalResources: 0,
+  connectedCount: servers.filter((s) => s.status === "connected" && !s.disabled).length,
+  disabledCount: servers.filter((s) => s.disabled).length,
+});
+
+test("MCP_STATUS_EVENT matches the adapter's versioned channel", () => {
+  assert.equal(MCP_STATUS_EVENT, "pi-mcp-adapter/status/v1");
+});
+
+test("mcpCountsFromSnapshot: six lazy servers, none connected", () => {
+  const snap = snapshot(Array.from({ length: 6 }, () => ({ status: "cached" })));
+  assert.deepEqual(mcpCountsFromSnapshot(snap), { used: 0, total: 6 });
+});
+
+test("mcpCountsFromSnapshot: only 'connected' counts as used", () => {
+  const snap = snapshot([
+    { status: "connected" },
+    { status: "cached" },
+    { status: "not-connected" },
+    { status: "needs-auth" },
+    { status: "failed" },
+    { status: "connected" },
+  ]);
+  assert.deepEqual(mcpCountsFromSnapshot(snap), { used: 2, total: 6 });
+});
+
+test("mcpCountsFromSnapshot: disabled servers leave the enabled total", () => {
+  const snap = snapshot([
+    { status: "connected" },
+    { status: "cached" },
+    { status: "disabled", disabled: true },
+  ]);
+  assert.deepEqual(mcpCountsFromSnapshot(snap), { used: 1, total: 2 });
+});
+
+test("mcpCountsFromSnapshot: empty snapshot on session shutdown", () => {
+  assert.deepEqual(mcpCountsFromSnapshot(snapshot([])), { used: 0, total: 0 });
+});
+
+test("mcpCountsFromSnapshot: rejects a future snapshot version", () => {
+  assert.equal(mcpCountsFromSnapshot({ ...snapshot([{ status: "connected" }]), version: 2 }), null);
+});
+
+test("mcpCountsFromSnapshot: rejects malformed or absent payloads", () => {
+  assert.equal(mcpCountsFromSnapshot(undefined), null);
+  assert.equal(mcpCountsFromSnapshot(null), null);
+  assert.equal(mcpCountsFromSnapshot("MCP: 6 servers enabled"), null);
+  assert.equal(mcpCountsFromSnapshot({ version: 1 }), null);
+  assert.equal(mcpCountsFromSnapshot({ version: 1, servers: [] }), null);
 });
