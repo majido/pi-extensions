@@ -14,10 +14,10 @@ one cycle, then reschedule (or stop).
 - Conventional Commit titles via the `commit` skill.
 - Only act autonomously on **straightforward** fixes. Anything ambiguous, risky,
   design-level, or scope-changing goes to `needsDecision` and pauses the loop.
-- **Agent attribution.** Any comment or review reply you post on the PR MUST
-  start with the `🤖 **<Model>**: ` prefix (see the global "Agent attribution"
-  rule in AGENTS.md). Example:
-  `🤖 **Claude**: good catch. I addressed feedback in commit abc123`.
+- **Comment attribution.** Any comment or review reply you post on the PR MUST
+  start with the `⁂ by <Model>: ` prefix (see "Comment Attribution" in
+  AGENTS.md). Never add it to PR titles, descriptions, or commits. Example:
+  `⁂ by Claude: Good catch, addressed in abc123.`
 
 ## 1. Load state
 
@@ -78,9 +78,9 @@ For each **failed/changed check**:
 For each **new review comment/review**:
 - If it's a clear, low-risk request (rename, comment, small refactor, obvious bug,
   doc tweak) → apply it, validate, commit, push. Optionally reply to the thread
-  noting it's addressed — every reply must start with the `🤖 **<Model>**: `
+  noting it's addressed — every reply must start with the `⁂ by <Model>: `
   attribution prefix (see Operating rules), e.g.
-  `🤖 **Claude**: good catch. I addressed feedback in commit abc123`.
+  `⁂ by Claude: Good catch, addressed in abc123.`
 - If it's a design choice, disagreement, ambiguous, or scope change → add to
   `needsDecision` with the comment text, author, file/line, and a one-line summary
   of the tradeoff.
