@@ -9,6 +9,10 @@
  * closed without merging — no confirmation needed, since there's nothing
  * left to review.
  *
+ * Each review session schedules a 4-hourly follow-up check (pi-schedule-prompt
+ * job named pr-review-followup-*, see skills/pr-review/SKILL.md). Closing a
+ * review — /review-done or the merged/closed sweep — removes that job first.
+ *
  * Commands:
  *   /review-inbox [--auto] [--dry-run]  — scan review requests, pick up new PRs
  *   /review-inbox --baseline            — mark all current requests as seen (no pickup)
@@ -155,12 +159,40 @@ function shellQuoteSingle(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function buildKickoff(prUrl: string): string {
+// The pr-review skill schedules a recurring follow-up check per review via
+// pi-schedule-prompt, which persists jobs in <cwd>/.pi/schedule-prompts.json.
+// Must match the job name prefix in skills/pr-review/SKILL.md.
+const FOLLOWUP_JOB_PREFIX = "pr-review-followup-";
+
+// Remove the review's follow-up jobs from the worktree's schedule store, so a
+// finished review stops checking and the next lease of this pooled worktree
+// does not inherit them. Returns the number of jobs removed.
+function removeFollowupJobs(worktree: string): number {
+	const storePath = join(worktree, ".pi", "schedule-prompts.json");
+	if (!existsSync(storePath)) return 0;
+	try {
+		const store = JSON.parse(readFileSync(storePath, "utf-8")) as { jobs?: Array<{ name?: string }> };
+		const jobs = store.jobs ?? [];
+		const kept = jobs.filter((j) => !j.name?.startsWith(FOLLOWUP_JOB_PREFIX));
+		if (kept.length === jobs.length) return 0;
+		writeFileSync(storePath, JSON.stringify({ ...store, jobs: kept }, null, 2));
+		return jobs.length - kept.length;
+	} catch {
+		return 0;
+	}
+}
+
+function buildKickoff(prUrl: string, opts: { autoPost?: boolean } = {}): string {
 	return [
 		`Read the pr-review skill at ${SKILL_PATH} and follow it to review this PR:`,
 		prUrl,
 		"",
 		"The worktree you are in is already checked out at the PR head.",
+		...(opts.autoPost
+			? [
+					"Auto-post mode: post the initial batch of review comments and questions without asking first (see the skill's auto-post mode). Never approve the PR.",
+				]
+			: []),
 		"At the end, ask whether the user considers the review done and wants the review workspace cleaned up.",
 		"If they confirm, call the review_done tool so it queues /review-done automatically.",
 	].join("\n");
@@ -255,7 +287,7 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 		// 3. Create the two-pane cmux workspace: pi (auto-review) | PR browser
 		const workspaceName = `🔍 ${pr.repoName}#${pr.number}`;
 		const sessionName = `pr review - ${pr.repoName}#${pr.number}`;
-		const kickoff = buildKickoff(pr.url);
+		const kickoff = buildKickoff(pr.url, { autoPost: true });
 		const piCommand = [
 			"pi",
 			"--name", shellQuoteSingle(sessionName),
@@ -351,6 +383,8 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 	// /review-done (interactive, user-confirmed via finishReview) and the
 	// merged-PR sweep below (automatic — a merged PR has nothing left to review).
 	async function returnWorktreeAndCloseWorkspace(key: string, info: StateEntry): Promise<string> {
+		// Stop the follow-up check before the workspace (and its pi) goes away.
+		const removedJobs = removeFollowupJobs(info.worktree!);
 		let returnMessage: string;
 		try {
 			await run("treehouse", ["return", info.worktree!, "--force"], homedir(), 120_000);
@@ -371,6 +405,7 @@ export default function prReviewInboxExtension(pi: ExtensionAPI) {
 			// Closing a workspace kills its pi process, if one is running there.
 			await pi.exec("cmux", ["workspace", "close", refToClose], { cwd: homedir(), timeout: 30_000 }).catch(() => {});
 		}
+		if (removedJobs > 0) returnMessage += `; stopped ${removedJobs} follow-up check(s)`;
 		return returnMessage;
 	}
 
